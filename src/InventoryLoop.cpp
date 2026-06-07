@@ -115,7 +115,7 @@ bool InventoryLoop::processProduct(const std::string& keycode,
     std::strftime(buffer, sizeof(buffer), "%Y-%m-%d", &tm);
 
     std::string dateStr(buffer);
-    if (e.is_preorder && e.preorder_release_date < dateStr){
+    if (e.is_preorder && e.preorder_release_date <= dateStr){
         e.is_preorder = !e.is_preorder;
     }
 
