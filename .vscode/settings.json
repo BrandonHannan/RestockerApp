@@ -1,0 +1,11 @@
+{
+    "sqltools.useNodeRuntime": true,
+    "sqltools.connections": [
+        {
+            "previewLimit": 100,
+            "driver": "SQLite",
+            "name": "Restocker",
+            "database": "${workspaceFolder:RestockerApp}/restocker.db"
+        }
+    ]
+}

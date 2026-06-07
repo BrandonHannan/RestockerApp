@@ -1,0 +1,58 @@
+{
+  "constructor": {
+    "base_url": "https://ac.cnstrc.com",
+    "key": "key_GZTqlLr41FS2p7AY",
+    "client_version": "ciojs-client-2.77.1",
+    "search_terms": ["pokemon cards"],
+    "num_results_per_page": 60,
+    "max_pages": 3,
+    "url_prefix_filter": "/product/pokemon-trading-card-game:",
+    "page_delay_ms": 750,
+    "min_ratelimit_remaining": 20
+  },
+  "kmart": {
+    "graphql_url": "https://api.kmart.com.au/gateway/graphql",
+    "postcode": "4221",
+    "country": "AU",
+    "target_state": "QLD",
+    "batch_size": 30,
+    "batch_delay_ms": 1000,
+    "instore_max": 8,
+    "transport": "browser"
+  },
+  "browser": {
+    "executable_path": "",
+    "headless": false,
+    "nav_url": "https://www.kmart.com.au/",
+    "page_settle_ms": 4000,
+    "relaunch_every_cycles": 0,
+    "cdp_timeout_ms": 30000
+  },
+  "intervals": {
+    "discovery_seconds": 2700,
+    "discovery_jitter_seconds": 900,
+    "inventory_seconds": 120,
+    "inventory_jitter_seconds": 60
+  },
+  "notifiers": {
+    "discord": {
+      "enabled": false,
+      "webhook_url": ""
+    },
+    "generic": {
+      "enabled": false,
+      "url": "",
+      "headers": {}
+    }
+  },
+  "http": {
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+    "timeout_ms": 15000,
+    "proxy": "",
+    "impersonate": true,
+    "impersonate_target": "chrome131"
+  },
+  "database": {
+    "path": "restocker.db"
+  }
+}

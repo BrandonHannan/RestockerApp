@@ -1,0 +1,8 @@
+build/
+config.json
+*.db
+*.db-wal
+*.db-shm
+*.log
+probe.json
+vcpkg_installed/

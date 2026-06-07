@@ -1,0 +1,11 @@
+{
+  "name": "restocker-app",
+  "version-string": "0.1.0",
+  "description": "Kmart AU Pokemon TCG restock detector (two-tier polling loop)",
+  "builtin-baseline": "f6672d8e480ccdecddfad3fd1b838ba369ffe6cd",
+  "dependencies": [
+    "nlohmann-json",
+    "sqlitecpp",
+    "spdlog"
+  ]
+}
