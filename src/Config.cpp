@@ -48,6 +48,13 @@ Config Config::loadFromFile(const std::string& path) {
         getIf(s, "url_prefix_filter", d.url_prefix_filter);
         getIf(s, "page_delay_ms", d.page_delay_ms);
         getIf(s, "min_ratelimit_remaining", d.min_ratelimit_remaining);
+        getIf(s, "browse_group_id", d.browse_group_id);
+        getIf(s, "browse_sort_by", d.browse_sort_by);
+        getIf(s, "browse_sort_order", d.browse_sort_order);
+        getIf(s, "sitemap_index_url", d.sitemap_index_url);
+        getIf(s, "product_sitemap_filter", d.product_sitemap_filter);
+        getIf(s, "sitemap_max_concurrency", d.sitemap_max_concurrency);
+        getIf(s, "sitemap_refresh_seconds", d.sitemap_refresh_seconds);
     }
 
     if (j.contains("kmart")) {
@@ -115,6 +122,18 @@ Config Config::loadFromFile(const std::string& path) {
     }
     if (c.constructor.url_prefix_filter.empty()) {
         throw std::runtime_error("constructor.url_prefix_filter must not be empty");
+    }
+    if (c.constructor.browse_group_id.empty()) {
+        throw std::runtime_error("constructor.browse_group_id must not be empty");
+    }
+    if (c.constructor.sitemap_index_url.empty()) {
+        throw std::runtime_error("constructor.sitemap_index_url must not be empty");
+    }
+    if (c.constructor.sitemap_max_concurrency < 1) {
+        throw std::runtime_error("constructor.sitemap_max_concurrency must be >= 1");
+    }
+    if (c.constructor.sitemap_refresh_seconds < 1) {
+        throw std::runtime_error("constructor.sitemap_refresh_seconds must be >= 1");
     }
     if (c.kmart.postcode.empty()) {
         throw std::runtime_error("kmart.postcode must not be empty");

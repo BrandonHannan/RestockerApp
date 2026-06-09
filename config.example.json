@@ -8,7 +8,14 @@
     "max_pages": 3,
     "url_prefix_filter": "/product/pokemon-trading-card-game:",
     "page_delay_ms": 750,
-    "min_ratelimit_remaining": 20
+    "min_ratelimit_remaining": 20,
+    "browse_group_id": "abfdf5b2d48e682ca75bfe87a0ecba17",
+    "browse_sort_by": "relevance",
+    "browse_sort_order": "descending",
+    "sitemap_index_url": "https://www.kmart.com.au/sitemap-index.xml",
+    "product_sitemap_filter": "product-sitemap",
+    "sitemap_max_concurrency": 6,
+    "sitemap_refresh_seconds": 600
   },
   "kmart": {
     "graphql_url": "https://api.kmart.com.au/gateway/graphql",
@@ -29,8 +36,8 @@
     "cdp_timeout_ms": 30000
   },
   "intervals": {
-    "discovery_seconds": 2700,
-    "discovery_jitter_seconds": 900,
+    "discovery_seconds": 90,
+    "discovery_jitter_seconds": 30,
     "inventory_seconds": 120,
     "inventory_jitter_seconds": 60
   },

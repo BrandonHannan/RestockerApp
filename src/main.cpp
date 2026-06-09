@@ -20,6 +20,7 @@
 #include "InventoryLoop.h"
 #include "KmartGraphQLClient.h"
 #include "NotifierManager.h"
+#include "SitemapClient.h"
 #include "StopToken.h"
 
 using namespace restocker;
@@ -141,6 +142,7 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, handleSignal);
 
     ConstructorClient constructor(cfg.constructor, http, cfg.kmart.target_state);
+    SitemapClient sitemap(cfg.constructor, http);
 
     // Inventory transport: real headless browser (CDP) to defeat Akamai, or the
     // curl-impersonate HTTP path as a fallback.
@@ -157,7 +159,7 @@ int main(int argc, char** argv) {
     KmartGraphQLClient kmart(cfg.kmart, *gateway);
     NotifierManager notifiers(cfg.notifiers, http, args.dry_run);
 
-    DiscoveryLoop discovery(cfg, constructor, db, stop);
+    DiscoveryLoop discovery(cfg, constructor, sitemap, db, stop);
     InventoryLoop inventory(cfg, kmart, db, notifiers, stop);
 
     const bool run_discovery = !args.inventory_only;

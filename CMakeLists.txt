@@ -26,6 +26,7 @@ add_executable(RestockerApp
   src/HttpClient.cpp
   src/Database.cpp
   src/ConstructorClient.cpp
+  src/SitemapClient.cpp
   src/KmartGraphQLClient.cpp
   src/CdpClient.cpp
   src/DiscordNotifier.cpp

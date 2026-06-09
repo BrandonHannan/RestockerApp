@@ -10,12 +10,29 @@ struct ConstructorConfig {
     std::string base_url = "https://ac.cnstrc.com";
     std::string key = "key_GZTqlLr41FS2p7AY";
     std::string client_version = "ciojs-client-2.77.1";
-    std::vector<std::string> search_terms{"pokemon cards"};
+    std::vector<std::string> search_terms{"pokemon cards"};  // legacy search discovery (unused)
     int num_results_per_page = 60;
     int max_pages = 3;
     std::string url_prefix_filter = "/product/pokemon-trading-card-game:";
     int page_delay_ms = 750;
     int min_ratelimit_remaining = 20;
+
+    // Discovery now joins the Kmart product sitemap (authoritative list of TCG
+    // product URLs / keycodes) against the Constructor.io *browse* endpoint
+    // (status enrichment: preorder, fulfilment channel, regional stateOOS).
+    // The browse group id is the Pokemon TCG category in Constructor's catalogue.
+    std::string browse_group_id = "abfdf5b2d48e682ca75bfe87a0ecba17";
+    std::string browse_sort_by = "relevance";
+    std::string browse_sort_order = "descending";
+
+    // Sitemap sweep: fetch the index, keep <loc>s containing product_sitemap_filter,
+    // scan each product sitemap for url_prefix_filter, extract the trailing-digit
+    // keycode. The (large) sweep is cached and refreshed every sitemap_refresh_seconds;
+    // the cheap browse sweep runs every discovery cycle.
+    std::string sitemap_index_url = "https://www.kmart.com.au/sitemap-index.xml";
+    std::string product_sitemap_filter = "product-sitemap";
+    int sitemap_max_concurrency = 6;
+    int sitemap_refresh_seconds = 600;
 };
 
 struct KmartConfig {
@@ -50,8 +67,10 @@ struct BrowserConfig {
 };
 
 struct IntervalsConfig {
-    int discovery_seconds = 2700;
-    int discovery_jitter_seconds = 900;
+    // Discovery is now cheap (sitemap cache + a tiny browse sweep), so it runs
+    // fast to catch newly-listed products before they sell out.
+    int discovery_seconds = 90;
+    int discovery_jitter_seconds = 30;
     int inventory_seconds = 120;
     int inventory_jitter_seconds = 60;
 };

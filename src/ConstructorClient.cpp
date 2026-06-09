@@ -156,4 +156,48 @@ ConstructorClient::PageResult ConstructorClient::fetchPage(const std::string& te
     return result;
 }
 
+ConstructorClient::PageResult ConstructorClient::fetchBrowsePage(const std::string& group_id,
+                                                                 int page,
+                                                                 const std::string& session_id,
+                                                                 long seq, long long dt_ms) {
+    PageResult result;
+
+    std::ostringstream url;
+    url << cfg_.base_url << "/browse/group_id/" << urlEncode(group_id)
+        << "?c=" << urlEncode(cfg_.client_version)
+        << "&key=" << urlEncode(cfg_.key)
+        << "&i=" << urlEncode(session_id)
+        << "&s=" << seq
+        << "&page=" << page
+        << "&num_results_per_page=" << cfg_.num_results_per_page
+        << "&sort_by=" << urlEncode(cfg_.browse_sort_by)
+        << "&sort_order=" << urlEncode(cfg_.browse_sort_order)
+        << "&_dt=" << dt_ms;
+
+    // Constructor.io is a cross-site (CORS) request from the browser's POV.
+    HttpResponse resp = http_.get(url.str(), {{"sec-fetch-site", "cross-site"}});
+    if (!resp.ok()) {
+        result.error = resp.error.empty()
+                           ? ("HTTP " + std::to_string(resp.status_code))
+                           : resp.error;
+        return result;
+    }
+
+    auto it = resp.headers.find("x-ratelimit-remaining");
+    if (it != resp.headers.end()) {
+        result.ratelimit_remaining = std::strtol(it->second.c_str(), nullptr, 10);
+    }
+
+    try {
+        // The browse group is already the TCG category, but keep the same prefix
+        // filter so non-TCG entries (if any) are dropped exactly as in search.
+        result.products = parseConstructorResults(resp.text, cfg_.url_prefix_filter,
+                                                  &result.total_results, target_state_);
+        result.ok = true;
+    } catch (const std::exception& e) {
+        result.error = std::string("parse error: ") + e.what();
+    }
+    return result;
+}
+
 }  // namespace restocker

@@ -29,8 +29,16 @@ public:
 
     // Fetch one search page. `session_id` is the persistent anon UUID, `seq`
     // the per-request counter, `dt_ms` the epoch-ms cache-buster.
+    // Legacy term-search discovery; superseded by fetchBrowsePage + the sitemap.
     PageResult fetchPage(const std::string& term, int page, const std::string& session_id,
                          long seq, long long dt_ms);
+
+    // Fetch one page of the Constructor.io *browse* endpoint for a group id
+    // (/browse/group_id/<group_id>). Same response shape as search, so the parsed
+    // products carry preorder / fulfilment / stateOOS status. Used by discovery to
+    // enrich the keycodes found in the sitemap.
+    PageResult fetchBrowsePage(const std::string& group_id, int page,
+                               const std::string& session_id, long seq, long long dt_ms);
 
 private:
     ConstructorConfig cfg_;
