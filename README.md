@@ -2,17 +2,25 @@
 
 A standalone C++ service that detects when Kmart AU **Pokémon Trading Card Game** products go live and when out-of-stock items are restocked, then fires notification webhooks (Discord and/or a generic HTTP POST).
 
-It runs a **two-tier polling loop**:
+It runs a **two-tier loop**:
 
-1. **Discovery loop** (slow, ~30–60 min) — queries the Constructor.io search API
-   (`ac.cnstrc.com`) sorted newest-first, keeps only results whose `url` begins with
-   `/product/pokemon-trading-card-game:`, and stores new `variation_id`s. A product is only
-   promoted to the polling tier (*tracked*) when it is regionally available: if its
-   `stateOOS` map flags `kmart.target_state` (default `QLD`) as out-of-stock, it is stored but
-   not polled. Each product's `FulfilmentChannel` is also captured for alert gating.
-2. **Inventory loop** (fast, ~1–5 min) — batches the tracked, currently out-of-stock
-   keycodes into a single `getProductAvailability` call against the Kmart GraphQL gateway
-   (`api.kmart.com.au/gateway/graphql`) at **postcode 4221**, and compares each returned
+1. **Discovery loop** (fast, ~30s) — sweeps the Kmart **product sitemap**
+   (`sitemap-index.xml` → the `product-sitemap-*.xml` files), keeps URLs containing
+   `/product/pokemon-trading-card-game:`, and derives each product's **keycode** (the trailing
+   digits of the URL, equal to Constructor's `variation_id`) plus a name from the URL slug. New
+   keycodes are inserted into `products` and immediately **cross-referenced against the
+   Constructor.io browse endpoint** (`ac.cnstrc.com/browse/group_id/<id>`) to fill pre-order,
+   `FulfilmentChannel`, regional `stateOOS` (→ *tracked*), price, image, and the clean display
+   name. Every `intervals.browse_refresh_seconds` (default 5 min) the whole browse group is
+   re-swept to refresh **all** existing rows. A product is only *tracked* (polled) when its
+   `stateOOS` map does **not** flag `kmart.target_state` (default `QLD`) as out-of-stock.
+   The sitemap sweep is cheap because the large product sitemaps are **HEAD-diffed** (ETag /
+   Last-Modified) and only re-downloaded when they actually change.
+2. **Inventory loop** (event-driven, ~5 min safety net) — **woken immediately** whenever
+   discovery cross-references the browse endpoint (a new product, or the periodic refresh), so a
+   restock is caught ASAP rather than on a fixed timer. It batches the tracked, currently
+   out-of-stock keycodes into a single `getProductAvailability` call against the Kmart GraphQL
+   gateway (`api.kmart.com.au/gateway/graphql`) at **postcode 4221**, and compares each returned
    `available` integer to the previous DB state. When any channel increases it fires **one
    consolidated alert per product** — enriched with the product image, price, Home Delivery /
    Click & Collect counts, the pre-order release date (for not-yet-purchasable items), and a
@@ -55,8 +63,13 @@ cp config.example.json config.json
 ```
 
 Key fields:
-- `constructor.url_prefix_filter` — strict URL prefix the discovery loop matches (default
-  `/product/pokemon-trading-card-game:`).
+- `constructor.url_prefix_filter` — substring the discovery loop matches in sitemap product URLs
+  and in browse results (default `/product/pokemon-trading-card-game:`).
+- `constructor.browse_group_id` — Constructor.io group id of the Pokémon TCG category that the
+  browse cross-reference reads status from (default the live TCG group).
+- `constructor.sitemap_index_url` / `product_sitemap_filter` — the sitemap index to sweep and the
+  substring identifying its product sitemaps (default `product-sitemap`).
+- `constructor.sitemap_max_concurrency` — max parallel sitemap fetches (default `6`).
 - `kmart.postcode` — `4221` (Gold Coast). The gateway returns the nearest Click & Collect
   stores automatically; no store IDs are hardcoded. Also used for the per-store `getFindInStore`
   lookup that enriches alerts.
@@ -67,7 +80,9 @@ Key fields:
   nearby stores the availability query requests.
 - `notifiers.discord` / `notifiers.generic` — enable and set URLs (see
   [Set up Discord alerts](#set-up-discord-alerts-private-channel) below).
-- `intervals.*` — base poll intervals + jitter (seconds).
+- `intervals.*` — `sitemap_seconds` (fast discovery poll, default 30), `browse_refresh_seconds`
+  (full browse-group status refresh, default 300), `inventory_seconds` (inventory idle cadence,
+  default 300; usually preempted by the discovery wake), plus per-loop jitter.
 
 ## Set up Discord alerts (private channel)
 
@@ -110,11 +125,15 @@ can see:
 
 1. **Notifiers** — set a real Discord/generic URL, enable it, run `--test-notify`,
    confirm the rich embed (image + nearby stores + pre-order banner) lands.
-2. **Discovery** — `--discovery-only --once`, then inspect the DB:
+2. **Discovery** — `--discovery-only --once` (the first run downloads all product sitemaps once),
+   then inspect the DB:
    ```sh
-   sqlite3 restocker.db "SELECT count(*), min(first_seen) FROM products;"
-   sqlite3 restocker.db "SELECT url FROM products LIMIT 10;"   # every row starts with the prefix
+   sqlite3 restocker.db "SELECT count(*) FROM products;"               # all sitemap TCG products
+   sqlite3 restocker.db "SELECT count(*) FROM products WHERE brand IS NOT NULL;"  # browse-enriched
+   sqlite3 restocker.db "SELECT variation_id,name,is_preorder,fulfilment_channel,tracked FROM products LIMIT 10;"
    ```
+   Sitemap-only products (not in the browse group) keep a URL-derived name and defaults
+   (`tracked=1`); browse-enriched rows get the clean Constructor name + pre-order/fulfilment/region.
 3. **Inventory** — `--inventory-only --once`; a known OOS keycode (e.g. `43519781`) writes
    `available=0` rows into `inventory_state`.
 4. **Restock simulation** — drop a stored value and re-run:
@@ -136,9 +155,15 @@ can see:
 
 ## Notes
 
-- The Constructor API is rate-limited (`x-ratelimit-limit: 201`); discovery reads the
-  remaining-quota header and backs off. The inventory loop's single batched GraphQL call
-  keeps its footprint small.
+- The Constructor browse API is rate-limited (`x-ratelimit-limit: 201`); discovery reads the
+  remaining-quota header and backs off. The browse group is only swept on a new product or every
+  `browse_refresh_seconds`, so its footprint is tiny.
+- The Kmart product sitemaps are large (~4.5 MB × 13) and send `Cache-Control: no-store`, so
+  conditional GET (`If-None-Match`/`If-Modified-Since`) is **not** honoured. The discovery loop
+  instead issues a cheap **HEAD** per sitemap each cycle and only full-GETs the ones whose
+  ETag/Last-Modified changed — steady state is ~14 bodyless requests every 30s. (The in-memory
+  validator cache is per-process, so the first sweep after a restart downloads all sitemaps once.)
+- The inventory loop's single batched GraphQL call keeps its footprint small.
 - Realistic browser headers (incl. `sec-ch-ua` / `sec-fetch-*`) and a reusable anon session
   id are sent.
 
@@ -187,10 +212,11 @@ Config:
   sensor JS validate cookies before fetching.
 - `browser.cdp_timeout_ms` — per-CDP-command timeout.
 
-The **discovery tier** (Constructor.io) still uses the curl-impersonate HTTP transport
+The **discovery tier** (the Kmart product sitemap **and** the Constructor.io browse endpoint) uses
+the curl-impersonate HTTP transport
 ([`cmake/FetchCurlImpersonate.cmake`](cmake/FetchCurlImpersonate.cmake), lexiforest `v1.5.6`,
-auto-downloaded + SHA-256 verified at configure time; `http.impersonate*` config) — it isn't
-behind Bot Manager and works directly.
+auto-downloaded + SHA-256 verified at configure time; `http.impersonate*` config) — neither is
+behind Bot Manager, so both work directly (HEAD and GET).
 
 - This tool is for personal stock monitoring of a public storefront. Respect Kmart's terms
   and keep poll intervals reasonable.

@@ -1,12 +1,12 @@
 {
-  "ExpandedNodes": [
-    ""
-  ],
-  "SelectedNode": "\\C:\\Users\\BrandonHannan\\source\\repos\\RestockerApp",
-  "PreviewInSolutionExplorer": false,
   "OutputFoldersPerTargetSystem": {
     "Local Machine": [
       "build"
     ]
-  }
+  },
+  "ExpandedNodes": [
+    ""
+  ],
+  "SelectedNode": "\\CMakeLists.txt",
+  "PreviewInSolutionExplorer": false
 }

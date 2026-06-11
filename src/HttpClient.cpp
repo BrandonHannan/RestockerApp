@@ -94,17 +94,23 @@ std::map<std::string, std::string> HttpClient::baseHeaders() const {
 
 HttpResponse HttpClient::get(const std::string& url,
                              const std::map<std::string, std::string>& extra_headers) {
-    return perform(url, /*post=*/false, /*body=*/"", extra_headers);
+    return perform(url, /*post=*/false, /*head=*/false, /*body=*/"", extra_headers);
+}
+
+HttpResponse HttpClient::head(const std::string& url,
+                              const std::map<std::string, std::string>& extra_headers) {
+    return perform(url, /*post=*/false, /*head=*/true, /*body=*/"", extra_headers);
 }
 
 HttpResponse HttpClient::postJson(const std::string& url, const std::string& body,
                                   const std::map<std::string, std::string>& extra_headers) {
     auto merged = extra_headers;
     merged.emplace("Content-Type", "application/json");  // don't override caller's
-    return perform(url, /*post=*/true, body, merged);
+    return perform(url, /*post=*/true, /*head=*/false, body, merged);
 }
 
-HttpResponse HttpClient::perform(const std::string& url, bool post, const std::string& body,
+HttpResponse HttpClient::perform(const std::string& url, bool post, bool head,
+                                 const std::string& body,
                                  const std::map<std::string, std::string>& extra_headers) {
     HttpResponse out;
 
@@ -161,6 +167,8 @@ HttpResponse HttpClient::perform(const std::string& url, bool post, const std::s
     if (post) {
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
         curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
+    } else if (head) {
+        curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);  // HEAD: headers only, no body
     }
 
     CURLcode rc = curl_easy_perform(curl);

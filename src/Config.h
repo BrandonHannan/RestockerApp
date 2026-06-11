@@ -27,12 +27,11 @@ struct ConstructorConfig {
 
     // Sitemap sweep: fetch the index, keep <loc>s containing product_sitemap_filter,
     // scan each product sitemap for url_prefix_filter, extract the trailing-digit
-    // keycode. The (large) sweep is cached and refreshed every sitemap_refresh_seconds;
-    // the cheap browse sweep runs every discovery cycle.
+    // keycode. Driven by conditional GETs (ETag/Last-Modified + <lastmod> diffing)
+    // so the ~30s poll only refetches sitemaps that actually changed.
     std::string sitemap_index_url = "https://www.kmart.com.au/sitemap-index.xml";
     std::string product_sitemap_filter = "product-sitemap";
     int sitemap_max_concurrency = 6;
-    int sitemap_refresh_seconds = 600;
 };
 
 struct KmartConfig {
@@ -67,17 +66,24 @@ struct BrowserConfig {
 };
 
 struct IntervalsConfig {
-    // Discovery is now cheap (sitemap cache + a tiny browse sweep), so it runs
-    // fast to catch newly-listed products before they sell out.
-    int discovery_seconds = 90;
-    int discovery_jitter_seconds = 30;
-    int inventory_seconds = 120;
-    int inventory_jitter_seconds = 60;
+    // Fast discovery loop: poll the product sitemap. Cheap thanks to conditional
+    // GETs (304 in steady state), so it runs often to catch new SKUs in seconds.
+    int sitemap_seconds = 30;
+    int sitemap_jitter_seconds = 5;
+    // How often to re-sweep the Constructor browse group to refresh the status of
+    // ALL existing product rows (preorder/fulfilment/tracked/price).
+    int browse_refresh_seconds = 300;
+    // Inventory idle cadence; usually preempted by the discovery wake trigger.
+    int inventory_seconds = 300;
+    int inventory_jitter_seconds = 30;
 };
 
 struct DiscordConfig {
     bool enabled = false;
-    std::string webhook_url;
+    std::string webhook_url;        // default / fallback (unknown fulfilment channel)
+    std::string webhook_instore;    // fulfilment_channel == 2
+    std::string webhook_online;     // fulfilment_channel 3/5, not pre-order
+    std::string webhook_preorder;   // fulfilment_channel 3/5, pre-order
 };
 
 struct GenericNotifierConfig {

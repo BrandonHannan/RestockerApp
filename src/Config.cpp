@@ -54,7 +54,6 @@ Config Config::loadFromFile(const std::string& path) {
         getIf(s, "sitemap_index_url", d.sitemap_index_url);
         getIf(s, "product_sitemap_filter", d.product_sitemap_filter);
         getIf(s, "sitemap_max_concurrency", d.sitemap_max_concurrency);
-        getIf(s, "sitemap_refresh_seconds", d.sitemap_refresh_seconds);
     }
 
     if (j.contains("kmart")) {
@@ -84,8 +83,9 @@ Config Config::loadFromFile(const std::string& path) {
     if (j.contains("intervals")) {
         const auto& s = j["intervals"];
         auto& d = c.intervals;
-        getIf(s, "discovery_seconds", d.discovery_seconds);
-        getIf(s, "discovery_jitter_seconds", d.discovery_jitter_seconds);
+        getIf(s, "sitemap_seconds", d.sitemap_seconds);
+        getIf(s, "sitemap_jitter_seconds", d.sitemap_jitter_seconds);
+        getIf(s, "browse_refresh_seconds", d.browse_refresh_seconds);
         getIf(s, "inventory_seconds", d.inventory_seconds);
         getIf(s, "inventory_jitter_seconds", d.inventory_jitter_seconds);
     }
@@ -95,6 +95,9 @@ Config Config::loadFromFile(const std::string& path) {
         if (s.contains("discord")) {
             getIf(s["discord"], "enabled", c.notifiers.discord.enabled);
             getIf(s["discord"], "webhook_url", c.notifiers.discord.webhook_url);
+            getIf(s["discord"], "webhook_instore", c.notifiers.discord.webhook_instore);
+            getIf(s["discord"], "webhook_online", c.notifiers.discord.webhook_online);
+            getIf(s["discord"], "webhook_preorder", c.notifiers.discord.webhook_preorder);
         }
         if (s.contains("generic")) {
             getIf(s["generic"], "enabled", c.notifiers.generic.enabled);
@@ -132,16 +135,14 @@ Config Config::loadFromFile(const std::string& path) {
     if (c.constructor.sitemap_max_concurrency < 1) {
         throw std::runtime_error("constructor.sitemap_max_concurrency must be >= 1");
     }
-    if (c.constructor.sitemap_refresh_seconds < 1) {
-        throw std::runtime_error("constructor.sitemap_refresh_seconds must be >= 1");
-    }
     if (c.kmart.postcode.empty()) {
         throw std::runtime_error("kmart.postcode must not be empty");
     }
     if (c.kmart.batch_size < 1) {
         throw std::runtime_error("kmart.batch_size must be >= 1");
     }
-    if (c.intervals.inventory_seconds < 1 || c.intervals.discovery_seconds < 1) {
+    if (c.intervals.inventory_seconds < 1 || c.intervals.sitemap_seconds < 1 ||
+        c.intervals.browse_refresh_seconds < 1) {
         throw std::runtime_error("interval seconds must be >= 1");
     }
     if (c.notifiers.discord.enabled && c.notifiers.discord.webhook_url.empty()) {

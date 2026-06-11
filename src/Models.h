@@ -61,6 +61,9 @@ struct RestockEvent {
     int click_collect_total = -1; // Click & Collect total units (-1 = unknown)
     std::vector<StoreStock> stores;  // nearby store breakdown
     std::int64_t timestamp = 0; // epoch seconds
+    // Routing: 2 = in-store, 3/5 = online/pre-order, 0 = unknown. Selects which
+    // Discord webhook the alert is delivered to.
+    int fulfilment_channel = 0;
 };
 
 }  // namespace restocker

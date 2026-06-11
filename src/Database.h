@@ -24,9 +24,19 @@ public:
     Database(const Database&) = delete;
     Database& operator=(const Database&) = delete;
 
-    // Insert a newly discovered product or refresh an existing one. Returns
-    // true if this product was not previously in the table (i.e. newly found).
-    bool upsertProduct(const Product& p);
+    // Insert a product discovered from the sitemap with only its base fields
+    // (keycode, url, name); enrichment columns keep their defaults. Returns true
+    // only when a row was actually inserted (i.e. a genuinely new keycode) —
+    // this drives "new product" detection in the discovery loop. Existing rows
+    // are left untouched.
+    bool insertProductIfAbsent(const std::string& keycode, const std::string& url,
+                               const std::string& name);
+
+    // Update the browse-sourced status columns for an existing product (brand,
+    // image, price, pre-order, tracked, fulfilment channel, and name when the
+    // browse value is non-empty). Never touches `url` (the canonical sitemap URL)
+    // and never inserts. No-op if the keycode is not present.
+    void updateProductStatus(const Product& p);
 
     // Tracked products that are currently out of stock everywhere we know about
     // (no inventory rows yet, or max known available across channels == 0).

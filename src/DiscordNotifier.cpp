@@ -53,8 +53,24 @@ std::string storeLine(const StoreStock& s) {
 
 }  // namespace
 
-DiscordNotifier::DiscordNotifier(std::string webhook_url, HttpClient& http)
-    : webhook_url_(std::move(webhook_url)), http_(http) {}
+DiscordNotifier::DiscordNotifier(const DiscordConfig& cfg, HttpClient& http)
+    : webhook_url_(cfg.webhook_url),
+      webhook_instore_(cfg.webhook_instore),
+      webhook_online_(cfg.webhook_online),
+      webhook_preorder_(cfg.webhook_preorder),
+      http_(http) {}
+
+const std::string& DiscordNotifier::webhookFor(const RestockEvent& event) const {
+    // Each category falls back to the default webhook when left unconfigured.
+    auto pick = [&](const std::string& specific) -> const std::string& {
+        return specific.empty() ? webhook_url_ : specific;
+    };
+    if (event.fulfilment_channel == 2) return pick(webhook_instore_);
+    if (event.fulfilment_channel == 3 || event.fulfilment_channel == 5) {
+        return event.is_preorder ? pick(webhook_preorder_) : pick(webhook_online_);
+    }
+    return webhook_url_;  // 0 / unknown -> default
+}
 
 std::string DiscordNotifier::buildBody(const RestockEvent& event) {
     std::string title = event.name.empty() ? ("Keycode " + event.keycode) : event.name;
@@ -123,7 +139,7 @@ std::string DiscordNotifier::buildBody(const RestockEvent& event) {
 }
 
 bool DiscordNotifier::notify(const RestockEvent& event) {
-    HttpResponse resp = http_.postJson(webhook_url_, buildBody(event));
+    HttpResponse resp = http_.postJson(webhookFor(event), buildBody(event));
     // Discord returns 204 No Content on success.
     if (resp.error.empty() && resp.status_code >= 200 && resp.status_code < 300) {
         return true;

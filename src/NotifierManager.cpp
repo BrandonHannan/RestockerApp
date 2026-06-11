@@ -11,7 +11,7 @@ NotifierManager::NotifierManager(const NotifiersConfig& cfg, HttpClient& http, b
     : dry_run_(dry_run) {
     if (cfg.discord.enabled) {
         notifiers_.push_back(
-            std::make_unique<DiscordNotifier>(cfg.discord.webhook_url, http));
+            std::make_unique<DiscordNotifier>(cfg.discord, http));
         spdlog::info("notifier enabled: discord");
     }
     if (cfg.generic.enabled) {

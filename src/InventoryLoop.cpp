@@ -96,6 +96,7 @@ bool InventoryLoop::processProduct(const std::string& keycode,
         e.is_preorder = p->is_preorder;
         e.preorder_release_date = p->preorder_release_date;
         fulfilmentChannel = p->fulfilment_channel;
+        e.fulfilment_channel = p->fulfilment_channel;
     }
 
     // FulfilmentChannel 2 is in-store only: suppress the alert unless a nearby
@@ -201,16 +202,22 @@ int InventoryLoop::runOnce() {
 }
 
 void InventoryLoop::run() {
-    spdlog::info("inventory loop started (every ~{}s)", cfg_.intervals.inventory_seconds);
+    spdlog::info("inventory loop started (every ~{}s, or on discovery trigger)",
+                 cfg_.intervals.inventory_seconds);
     while (!stop_.stopRequested()) {
         try {
             runOnce();
         } catch (const std::exception& e) {
             spdlog::error("inventory pass threw: {}", e.what());
         }
-        if (!stop_.sleepFor(jitteredDelay(cfg_.intervals.inventory_seconds,
-                                          cfg_.intervals.inventory_jitter_seconds))) {
-            break;
+        // Wait for the idle interval, but return early when discovery wakes us
+        // (a browse cross-reference happened) so a restock is caught ASAP. The
+        // wait restarts each iteration, so a wake rebases the idle timer.
+        StopToken::Wait w = stop_.waitForOrWake(jitteredDelay(
+            cfg_.intervals.inventory_seconds, cfg_.intervals.inventory_jitter_seconds));
+        if (w == StopToken::Wait::Stopped) break;
+        if (w == StopToken::Wait::Woken) {
+            spdlog::info("inventory loop woken by discovery");
         }
     }
     spdlog::info("inventory loop stopped");

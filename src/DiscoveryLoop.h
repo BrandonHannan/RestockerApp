@@ -12,26 +12,24 @@
 
 namespace restocker {
 
-// Discovery loop: builds the Pokemon TCG product universe from the Kmart product
-// sitemap (keycode -> URL, cached and refreshed periodically), enriches it with
-// live status from the Constructor.io browse endpoint, and persists each product.
+// Fast discovery loop (~30s): sweeps the Kmart product sitemap (authoritative
+// list of TCG products), inserts newly-seen keycodes, cross-references new
+// keycodes (and, every browse_refresh_seconds, all rows) against the Constructor
+// browse endpoint for status, and wakes the inventory loop whenever it learns
+// something changed.
 class DiscoveryLoop {
 public:
     DiscoveryLoop(const Config& cfg, ConstructorClient& client, SitemapClient& sitemap,
                   Database& db, StopToken& stop);
 
-    // Run one discovery pass (sitemap join + browse sweep). Returns number of
-    // newly discovered products. Safe to call standalone for --once / --discovery-only.
+    // Run one discovery pass. Returns the number of newly discovered products.
+    // Safe to call standalone for --once / --discovery-only.
     int runOnce();
 
     // Blocking loop until stop is requested.
     void run();
 
 private:
-    // Refresh the cached sitemap keycode->URL map if it is empty or stale. Keeps
-    // the previous cache on a failed fetch.
-    void refreshSitemapIfDue();
-
     // Sweep the Constructor browse group into a keycode -> status Product map.
     std::unordered_map<std::string, Product> sweepBrowseStatus();
 
@@ -41,9 +39,8 @@ private:
     Database& db_;
     StopToken& stop_;
 
-    std::unordered_map<std::string, std::string> sitemap_cache_;  // keycode -> URL
-    std::chrono::steady_clock::time_point last_sitemap_refresh_{};
-    bool sitemap_loaded_ = false;
+    std::chrono::steady_clock::time_point last_browse_refresh_{};
+    bool browse_refreshed_ = false;  // forces a full browse refresh on the first pass
 };
 
 }  // namespace restocker

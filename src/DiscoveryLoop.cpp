@@ -2,7 +2,9 @@
 
 #include <chrono>
 #include <random>
+#include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include <spdlog/spdlog.h>
 
@@ -34,26 +36,6 @@ DiscoveryLoop::DiscoveryLoop(const Config& cfg, ConstructorClient& client, Sitem
                              Database& db, StopToken& stop)
     : cfg_(cfg), client_(client), sitemap_(sitemap), db_(db), stop_(stop) {}
 
-void DiscoveryLoop::refreshSitemapIfDue() {
-    const auto now = std::chrono::steady_clock::now();
-    const bool stale =
-        !sitemap_loaded_ ||
-        (now - last_sitemap_refresh_) >=
-            std::chrono::seconds(cfg_.constructor.sitemap_refresh_seconds);
-    if (!stale) return;
-
-    auto fresh = sitemap_.sweep();
-    if (!fresh.empty()) {
-        sitemap_cache_ = std::move(fresh);
-        last_sitemap_refresh_ = now;
-        sitemap_loaded_ = true;
-    } else if (sitemap_loaded_) {
-        spdlog::warn("sitemap sweep failed; keeping {} cached keycodes", sitemap_cache_.size());
-    } else {
-        spdlog::warn("sitemap sweep returned no products; will retry next pass");
-    }
-}
-
 std::unordered_map<std::string, Product> DiscoveryLoop::sweepBrowseStatus() {
     std::unordered_map<std::string, Product> map;
     const std::string session_id = db_.getOrCreateSessionId();
@@ -77,11 +59,9 @@ std::unordered_map<std::string, Product> DiscoveryLoop::sweepBrowseStatus() {
         spdlog::debug("browse page {}: {} products, total_results={}, ratelimit_remaining={}",
                       page, got, res.total_results, res.ratelimit_remaining);
 
-        // Stop once we've paged past the group's result set.
         if (res.total_results > 0 && page * cc.num_results_per_page >= res.total_results) {
             break;
         }
-        // Back off if we're close to the rate limit.
         if (res.ratelimit_remaining >= 0 && res.ratelimit_remaining < cc.min_ratelimit_remaining) {
             spdlog::warn("constructor rate limit low ({}); ending browse sweep early",
                          res.ratelimit_remaining);
@@ -95,57 +75,70 @@ std::unordered_map<std::string, Product> DiscoveryLoop::sweepBrowseStatus() {
 }
 
 int DiscoveryLoop::runOnce() {
-    refreshSitemapIfDue();
-    if (sitemap_cache_.empty()) {
-        spdlog::warn("discovery pass: sitemap cache empty, nothing to join");
-        return 0;
-    }
-
-    // Cheap per-cycle status feed for the whole TCG browse group.
-    std::unordered_map<std::string, Product> browse = sweepBrowseStatus();
-    spdlog::info("discovery: {} sitemap keycodes, {} browse status entries",
-                 sitemap_cache_.size(), browse.size());
-
     int newly = 0;
-    int enriched = 0;
-    for (const auto& kv : sitemap_cache_) {
-        if (stop_.stopRequested()) return newly;
-        const std::string& keycode = kv.first;
-        const std::string& url = kv.second;
+    std::unordered_set<std::string> newKeycodes;
 
-        // Sitemap is authoritative for "which products exist"; browse enriches
-        // status. Missing browse status -> conservative defaults (tracked=true).
-        Product p;
-        auto it = browse.find(keycode);
-        if (it != browse.end()) {
-            p = it->second;
-            ++enriched;
+    // 1. Sitemap sweep (cheap; nullopt when nothing changed since last pass).
+    auto cur = sitemap_.sweep();
+    if (cur) {
+        for (const auto& kv : *cur) {
+            if (stop_.stopRequested()) return newly;
+            const std::string& keycode = kv.first;
+            const std::string& url = kv.second;
+            if (db_.insertProductIfAbsent(
+                    keycode, url, productNameFromUrl(url, cfg_.constructor.url_prefix_filter))) {
+                newKeycodes.insert(keycode);
+                ++newly;
+            }
         }
-        p.variation_id = keycode;
-        p.url = url;  // canonical absolute URL straight from the sitemap
-
-        if (db_.upsertProduct(p)) {
-            ++newly;
-            spdlog::info("discovered new product keycode={} '{}'{}", p.variation_id, p.name,
-                         p.is_preorder ? " [pre-order]" : "");
-        }
+        if (newly > 0) spdlog::info("discovery: {} new product(s) from sitemap", newly);
     }
 
-    spdlog::info("discovery pass complete: {} keycodes, {} enriched, {} new",
-                 sitemap_cache_.size(), enriched, newly);
+    // 2. Decide if we need to hit the browse endpoint this pass.
+    const auto now = std::chrono::steady_clock::now();
+    const bool refreshDue =
+        !browse_refreshed_ ||
+        (now - last_browse_refresh_) >=
+            std::chrono::seconds(cfg_.intervals.browse_refresh_seconds);
+    const bool browseNeeded = !newKeycodes.empty() || refreshDue;
+
+    // 3. One browse sweep serves both the new-product and refresh-all paths.
+    if (browseNeeded && !stop_.stopRequested()) {
+        auto browse = sweepBrowseStatus();
+        int enriched = 0;
+        for (auto& kv : browse) {
+            // Enrich newly-found rows always; on a refresh, enrich every existing
+            // row (updateProductStatus is a no-op when the keycode is absent).
+            if (refreshDue || newKeycodes.count(kv.first)) {
+                db_.updateProductStatus(kv.second);
+                ++enriched;
+            }
+        }
+        if (refreshDue) {
+            last_browse_refresh_ = now;
+            browse_refreshed_ = true;
+        }
+        spdlog::info("discovery: browse sweep {} entries, {} enriched ({})", browse.size(),
+                     enriched, refreshDue ? "full refresh" : "new only");
+
+        // 4. Something was (re)checked — let the inventory loop poll stock now.
+        stop_.wake();
+    }
+
     return newly;
 }
 
 void DiscoveryLoop::run() {
-    spdlog::info("discovery loop started (every ~{}s)", cfg_.intervals.discovery_seconds);
+    spdlog::info("discovery loop started (sitemap every ~{}s, browse refresh ~{}s)",
+                 cfg_.intervals.sitemap_seconds, cfg_.intervals.browse_refresh_seconds);
     while (!stop_.stopRequested()) {
         try {
             runOnce();
         } catch (const std::exception& e) {
             spdlog::error("discovery pass threw: {}", e.what());
         }
-        if (!stop_.sleepFor(jitteredDelay(cfg_.intervals.discovery_seconds,
-                                          cfg_.intervals.discovery_jitter_seconds))) {
+        if (!stop_.sleepFor(jitteredDelay(cfg_.intervals.sitemap_seconds,
+                                          cfg_.intervals.sitemap_jitter_seconds))) {
             break;
         }
     }

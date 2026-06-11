@@ -16,16 +16,20 @@ The service is organised into five tiers:
 
 | Tier | Responsibility | Key code |
 |------|----------------|----------|
-| **Discovery** | Find new Pokémon TCG products (slow, ~45 min) | [DiscoveryLoop.cpp](src/DiscoveryLoop.cpp), [ConstructorClient.cpp](src/ConstructorClient.cpp) |
-| **Inventory** | Poll stock levels and detect restocks (fast, ~2 min) | [InventoryLoop.cpp](src/InventoryLoop.cpp), [KmartGraphQLClient.cpp](src/KmartGraphQLClient.cpp) |
+| **Discovery** | Find TCG products via the product sitemap, enrich status via Constructor browse (fast, ~30s) | [DiscoveryLoop.cpp](src/DiscoveryLoop.cpp), [SitemapClient.cpp](src/SitemapClient.cpp), [ConstructorClient.cpp](src/ConstructorClient.cpp) |
+| **Inventory** | Poll stock levels and detect restocks (event-driven — woken by discovery; ~5 min safety net) | [InventoryLoop.cpp](src/InventoryLoop.cpp), [KmartGraphQLClient.cpp](src/KmartGraphQLClient.cpp) |
 | **Transport** | Get requests past Akamai Bot Manager | [HttpClient.cpp](src/HttpClient.cpp), [CdpClient.cpp](src/CdpClient.cpp), [GatewayTransport.h](src/GatewayTransport.h) |
 | **Notification** | Fan out restock alerts | [NotifierManager.cpp](src/NotifierManager.cpp), [DiscordNotifier.cpp](src/DiscordNotifier.cpp), [GenericWebhookNotifier.cpp](src/GenericWebhookNotifier.cpp) |
 | **Persistence / infra** | Store state, coordinate threads, config, shutdown | [Database.cpp](src/Database.cpp), [Config.cpp](src/Config.cpp), [StopToken.h](src/StopToken.h) |
 
-The core idea is a **two-speed split**: discovery is expensive and rate-limited, so it runs
-rarely; inventory checks only the products that are currently out of stock, so it can run often
-and cheaply. The SQLite database is the shared memory between the two loops — discovery writes
-products, inventory reads which ones to watch and remembers the last stock level it saw.
+The core idea is **fast, cheap discovery driving event-driven inventory**: discovery polls the
+product sitemap every ~30s but stays cheap by HEAD-diffing the (large) sitemaps and only
+re-downloading what changed, and only calls the Constructor browse endpoint for new products or a
+periodic refresh. Whenever discovery learns something changed it **wakes** the inventory loop, so
+a restock is checked immediately instead of on a fixed timer; the inventory loop also self-runs
+every ~5 min as a safety net. The SQLite database is the shared memory between the two loops —
+discovery writes products, inventory reads which ones to watch and remembers the last stock level
+it saw — and a single `StopToken` carries both shutdown and the discovery→inventory wake.
 
 ---
 
@@ -45,14 +49,18 @@ flowchart TD
   stop -.wakes.-> dthread
   stop -.wakes.-> ithread
 
-  subgraph Discovery["Discovery tier (~45 min)"]
+  subgraph Discovery["Discovery tier (~30s)"]
     dthread --> dloop["DiscoveryLoop::runOnce"]
-    dloop --> cc["ConstructorClient::fetchPage"]
-    cc --> ctor[("Constructor.io<br/>ac.cnstrc.com")]
-    dloop -->|"upsertProduct (new?)"| db[("SQLite Database<br/>restocker.db")]
+    dloop --> sm["SitemapClient::sweep<br/>(HEAD-diff, GET changed)"]
+    sm --> smap[("Kmart product sitemap<br/>www.kmart.com.au")]
+    dloop -->|"insertProductIfAbsent (new?)"| db[("SQLite Database<br/>restocker.db")]
+    dloop --> cc["ConstructorClient::fetchBrowsePage<br/>(new keycodes + ~5 min refresh)"]
+    cc --> ctor[("Constructor.io browse<br/>ac.cnstrc.com")]
+    dloop -->|"updateProductStatus"| db
+    dloop -.->|"stop.wake()"| ithread
   end
 
-  subgraph Inventory["Inventory tier (~2 min)"]
+  subgraph Inventory["Inventory tier (woken; ~5 min safety net)"]
     ithread --> iloop["InventoryLoop::runOnce"]
     iloop -->|"getTrackedOOSKeycodes"| db
     iloop --> kc["KmartGraphQLClient::queryAvailability"]
@@ -89,6 +97,7 @@ The lifecycle of a single product: *discovered → first poll (out of stock) →
 sequenceDiagram
   autonumber
   participant D as DiscoveryLoop
+  participant SM as SitemapClient
   participant CC as ConstructorClient
   participant DB as Database
   participant I as InventoryLoop
@@ -96,14 +105,19 @@ sequenceDiagram
   participant T as IGatewayTransport
   participant N as NotifierManager
 
-  Note over D: Discovery pass (~45 min cadence)
-  D->>CC: fetchPage(term, page, session, seq)
-  CC->>CC: parse + filter by URL prefix
-  CC-->>D: products[]
-  D->>DB: upsertProduct(p) → isNew?
-  Note over D,DB: new keycode logged & tracked
+  Note over D: Discovery pass (~30s cadence)
+  D->>SM: sweep() — HEAD each sitemap, GET changed
+  SM-->>D: keycode→url map (or nullopt if unchanged)
+  D->>DB: insertProductIfAbsent(keycode, url, name) → new?
+  opt new keycode(s) or ~5 min refresh
+    D->>CC: fetchBrowsePage(group_id, page, session, seq)
+    CC->>CC: parse + filter by URL prefix
+    CC-->>D: products[] (preorder / fulfilment / stateOOS)
+    D->>DB: updateProductStatus(p)  (enrichment; url untouched)
+    D->>I: stop.wake() — check stock now
+  end
 
-  Note over I: Inventory pass (~2 min cadence)
+  Note over I: Inventory pass (woken, or ~5 min safety net)
   I->>DB: getTrackedOOSKeycodes()
   DB-->>I: [keycodes still OOS]
   I->>K: queryAvailability(batch)
@@ -173,43 +187,48 @@ wakes immediately and `sleepFor` returns `false` to signal "exit now".
 make Ctrl-C take up to 45 minutes to take effect. The condition-variable approach gives instant,
 clean shutdown while still being a plain time-based wait in the normal case.
 
-### Discovery — [DiscoveryLoop.cpp](src/DiscoveryLoop.cpp) + [ConstructorClient.cpp](src/ConstructorClient.cpp)
+### Discovery — [DiscoveryLoop.cpp](src/DiscoveryLoop.cpp) + [SitemapClient.cpp](src/SitemapClient.cpp) + [ConstructorClient.cpp](src/ConstructorClient.cpp)
 
-**What:** Periodically finds new Pokémon TCG products and records them.
+**What:** Every ~30s, finds the full set of Pokémon TCG products from the Kmart product sitemap,
+enriches their status from the Constructor browse endpoint, and pokes the inventory loop.
 
-**How:** [`runOnce`](src/DiscoveryLoop.cpp#L36) loops over each configured search term and pages
-through results (up to `max_pages`). For each page it calls
-[`ConstructorClient::fetchPage`](src/DiscoveryLoop.cpp#L45) with a persistent anonymous
-`session_id` and a monotonic sequence number (both from the DB), plus an epoch-ms cache-buster.
-The client hits Constructor.io, parses the tolerant JSON, and keeps only results whose `url`
-starts with `/product/pokemon-trading-card-game:`. Each match is pushed through
-[`db.upsertProduct`](src/DiscoveryLoop.cpp#L54), which returns `true` for genuinely new keycodes
-(those get logged as "discovered new product").
+**How:** [`runOnce`](src/DiscoveryLoop.cpp) calls [`SitemapClient::sweep`](src/SitemapClient.cpp),
+which GETs the small `sitemap-index.xml`, then for each `product-sitemap-*.xml` issues a cheap
+**HEAD** and compares the `ETag`/`Last-Modified` to an in-memory cache — only the sitemaps that
+actually changed are full-GET re-scanned. URLs containing `/product/pokemon-trading-card-game:`
+are kept, and [`extractKeycodeFromUrl`](src/SitemapClient.cpp) takes the **trailing digits** as the
+keycode (identical to Constructor's `variation_id`). `sweep()` returns the current `keycode → url`
+map, or `nullopt` when nothing changed (the common case — then the pass does nothing).
 
-The parser also reads two regional/policy fields from the Constructor `data` object:
-`stateOOS` (a state → exhausted-allocation map) and `FulfilmentChannel`. If the configured
-`kmart.target_state` (default `QLD`, matching postcode `4221`) is present as a key in `stateOOS`,
-the product is **stored but marked `tracked=0`** so the inventory tier never polls it — it can't
-be fulfilled to our region anyway. When the state key is absent the product is `tracked=1` and
-promoted to polling. Because this is recomputed on every discovery refresh, a product flips
-between tracked/untracked as its regional availability changes. `FulfilmentChannel` is persisted
-for use at alert time (see Inventory).
+Each keycode is inserted with [`db.insertProductIfAbsent`](src/Database.cpp) (keycode, sitemap
+URL, a name de-slugged from the URL); it returns `true` only for genuinely new keycodes. If there
+are new keycodes — or every `intervals.browse_refresh_seconds` (default 5 min) — discovery sweeps
+the Constructor **browse group** ([`fetchBrowsePage`](src/ConstructorClient.cpp), reusing the
+tolerant [`parseConstructorResults`](src/ConstructorClient.cpp)) once and calls
+[`db.updateProductStatus`](src/Database.cpp) to fill `isPreOrderActive`, `preOrderReleaseDate`,
+`FulfilmentChannel`, regional `stateOOS` (→ `tracked`), price, image, and the clean display name.
+`updateProductStatus` leaves the sitemap `url` untouched and upgrades the name only when the browse
+`value` is non-empty, so sitemap-only products keep their URL-derived name. Whenever a browse
+cross-reference happens, discovery calls [`stop_.wake()`](src/StopToken.h) to trigger an inventory
+pass immediately.
 
-The loop has three early-exit guards: it stops paging a term once
-`page * num_results_per_page >= total_results` ([line 66](src/DiscoveryLoop.cpp#L66)), it bails
-out of the whole pass if the `ratelimit_remaining` header drops below
-`min_ratelimit_remaining` ([line 71](src/DiscoveryLoop.cpp#L71)), and every wait uses
-`stop_.sleepFor` so shutdown is honoured mid-pass.
+The regional gate is unchanged: if `kmart.target_state` (default `QLD`) is a key in a product's
+`stateOOS` map it is stored but `tracked=0` (never polled); otherwise `tracked=1`. The browse
+sweep keeps the same early-exit guards as before (`page * num_results_per_page >= total_results`,
+and backing off when `ratelimit_remaining` drops below `min_ratelimit_remaining`).
 
-**Why:** Discovery is the rate-limited, "expensive" half of the system, so it runs on a long
-(~45 min) jittered interval and actively backs off the Constructor API. The session id + sequence
-counter make the requests look like a normal browsing session to Constructor.io. Filtering by URL
-prefix is a cheap, strict way to keep only TCG products out of broad search terms like
-"pokemon cards".
+**Why:** The sitemap is the authoritative, comprehensive list of TCG product URLs, and it changes
+rarely — so HEAD-diffing makes a 30s poll nearly free (the product sitemaps are ~4.5 MB each and
+send `Cache-Control: no-store`, so conditional GET is not honoured; HEAD + ETag diff is the cheap
+substitute). The browse endpoint is small and carries the live status the sitemap lacks, so it is
+only hit for new products or a periodic refresh. Driving the inventory loop by a wake (rather than
+a slow fixed timer) is what makes a restock alert land within seconds.
 
 ### Inventory — [InventoryLoop.cpp](src/InventoryLoop.cpp) + [KmartGraphQLClient.cpp](src/KmartGraphQLClient.cpp)
 
-**What:** Polls live stock for currently-out-of-stock products and fires alerts on restock.
+**What:** Polls live stock for currently-out-of-stock products and fires alerts on restock. The
+loop runs when **woken by discovery** (a browse cross-reference happened) via
+[`StopToken::waitForOrWake`](src/StopToken.h), or on a ~5 min idle safety-net timer.
 
 **How:** [`runOnce`](src/InventoryLoop.cpp#L65) asks the DB for
 [`getTrackedOOSKeycodes`](src/InventoryLoop.cpp#L66) — products that are tracked and whose best
@@ -247,8 +266,9 @@ units in `getProductAvailability`** (which now also requests `IN_STORE`), not fr
 `getFindInStore` — that follow-up call is used only to attach store names and phone numbers.
 Stores with zero stock never appear, and each line shows the real unit count.
 
-**Why:** Only checking out-of-stock keycodes keeps each pass small and lets it run on a short
-(~2 min) interval — the latency that actually matters for catching a restock. Treating a *first
+**Why:** Only checking out-of-stock keycodes keeps each pass small. Rather than a fixed short
+interval, the pass is **triggered by the discovery wake** the instant status changes (with a
+~5 min idle fallback) — the latency that actually matters for catching a restock. Treating a *first
 sighting with positive stock* as a restock (because `prev` defaults to 0) means a product that
 appears already in stock still alerts. Stock is always persisted, even with no alert, so the next
 pass has an accurate baseline and "still in stock" doesn't re-alert. **Grouping by keycode** means
@@ -300,10 +320,12 @@ a lighter fallback.
 - **`app_meta`** — key/value store holding the Constructor.io `session_id` and sequence counter.
 
 Every public method takes `std::lock_guard<std::mutex> lock(mtx_)`.
-[`upsertProduct`](src/Database.cpp#L76) returns whether the row was new (driving the "discovered"
-log). [`getTrackedOOSKeycodes`](src/Database.cpp#L123) is the cross-table query that defines the
-inventory watch-list (`MAX(available) = 0` across all channels).
-[`setStock`](src/Database.cpp#L174) is an upsert via `ON CONFLICT ... DO UPDATE`.
+[`insertProductIfAbsent`](src/Database.cpp) inserts a sitemap-discovered product's base fields and
+returns whether a row was actually inserted (driving "new product" detection);
+[`updateProductStatus`](src/Database.cpp) updates only the browse-sourced enrichment columns
+(leaving the sitemap `url` intact). [`getTrackedOOSKeycodes`](src/Database.cpp) is the cross-table
+query that defines the inventory watch-list (`MAX(available) = 0` across all channels).
+[`setStock`](src/Database.cpp) is an upsert via `ON CONFLICT ... DO UPDATE`.
 
 The shared structs in [Models.h](src/Models.h) are deliberately plain: `Product` (incl.
 `image_url`, the `tracked` flag, and `fulfilment_channel`), `ChannelStock` (one stock reading),
@@ -353,7 +375,8 @@ structs — `ConstructorConfig`, `KmartConfig`, `BrowserConfig`, `IntervalsConfi
 invalid values. There is no hot-reload; config is read-only after load.
 
 **Why:** Every tunable — poll intervals and jitter, batch sizes, the impersonation target, the
-browser settle delay, search terms, webhook URLs — lives in one place with defaults, so the
+browser settle delay, the sitemap/browse discovery settings, webhook URLs — lives in one place
+with defaults, so the
 service runs out of the box and is reconfigured without recompiling. Read-only-after-load means
 the loops never need to lock around config.
 
@@ -379,8 +402,9 @@ the loops never need to lock around config.
 
 | System | Purpose | Protocol | Cadence | Timeout |
 |--------|---------|----------|---------|---------|
-| **Constructor.io** (`ac.cnstrc.com`) | Product discovery | HTTPS GET via curl-impersonate | ~45 min (2700s ±900s) | 15s |
-| **Kmart GraphQL** (`api.kmart.com.au/gateway/graphql`) | `getProductAvailability` (HD/CnC/in-store stock) + `getFindInStore` (store name/phone enrichment, only on a restock) | HTTPS via browser (CDP) or curl-impersonate | ~2 min (120s ±60s) | 15s / CDP 30s per command |
+| **Kmart product sitemap** (`www.kmart.com.au/sitemap-index.xml` + `product-sitemap-*.xml`) | New-product discovery (keycode + URL) | HTTPS HEAD-diff, GET changed only, via curl-impersonate | ~30s (sitemap_seconds) | 15s |
+| **Constructor.io browse** (`ac.cnstrc.com`) | Product status (pre-order / fulfilment / regional / price / image / name) | HTTPS GET via curl-impersonate | new products + full refresh ~5 min | 15s |
+| **Kmart GraphQL** (`api.kmart.com.au/gateway/graphql`) | `getProductAvailability` (HD/CnC/in-store stock) + `getFindInStore` (store name/phone enrichment, only on a restock) | HTTPS via browser (CDP) or curl-impersonate | woken by discovery; ~5 min safety net | 15s / CDP 30s per command |
 | **Discord webhook** | Restock alerts | HTTPS POST (embed JSON) | per restock | 15s |
 | **Generic HTTP endpoint** | Restock alerts | HTTPS POST (flat JSON + custom headers) | per restock | 15s |
 | **Chrome / Edge** (local) | Akamai evasion for the GraphQL POST | Chrome DevTools Protocol over WebSocket | with each inventory pass | `cdp_timeout_ms` (30s) |

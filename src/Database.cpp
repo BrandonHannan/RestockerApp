@@ -87,59 +87,50 @@ void Database::initSchema() {
     db_->exec("CREATE TABLE IF NOT EXISTS app_meta (k TEXT PRIMARY KEY, v TEXT)");
 }
 
-bool Database::upsertProduct(const Product& p) {
+bool Database::insertProductIfAbsent(const std::string& keycode, const std::string& url,
+                                     const std::string& name) {
     std::lock_guard<std::mutex> lock(mtx_);
     const std::int64_t now = nowSeconds();
 
-    bool isNew;
-    {
-        SQLite::Statement q(*db_,
-                            "SELECT 1 FROM products WHERE variation_id = ?");
-        q.bind(1, p.variation_id);
-        isNew = !q.executeStep();
-    }
+    // INSERT OR IGNORE: only a genuinely new keycode inserts a row. changes()
+    // then reports 1 for an insert, 0 when the row already existed.
+    SQLite::Statement ins(
+        *db_,
+        "INSERT OR IGNORE INTO products (variation_id, name, url, first_seen, last_seen)"
+        " VALUES (?, ?, ?, ?, ?)");
+    ins.bind(1, keycode);
+    ins.bind(2, name);
+    ins.bind(3, url);
+    ins.bind(4, now);
+    ins.bind(5, now);
+    ins.exec();
+    return db_->getChanges() > 0;
+}
 
-    if (isNew) {
-        SQLite::Statement ins(
-            *db_,
-            "INSERT INTO products (variation_id, name, url, brand, image_url, price,"
-            " is_preorder, preorder_release_date, tracked, fulfilment_channel,"
-            " first_seen, last_seen)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        ins.bind(1, p.variation_id);
-        ins.bind(2, p.name);
-        ins.bind(3, p.url);
-        ins.bind(4, p.brand);
-        ins.bind(5, p.image_url);
-        ins.bind(6, p.price);
-        ins.bind(7, p.is_preorder ? 1 : 0);
-        ins.bind(8, p.preorder_release_date);
-        ins.bind(9, p.tracked ? 1 : 0);
-        ins.bind(10, p.fulfilment_channel);
-        ins.bind(11, now);
-        ins.bind(12, now);
-        ins.exec();
-    } else {
-        SQLite::Statement upd(
-            *db_,
-            "UPDATE products SET name=?, url=?, brand=?, image_url=?, price=?,"
-            " is_preorder=?, preorder_release_date=?, tracked=?,"
-            " fulfilment_channel=?, last_seen=?"
-            " WHERE variation_id=?");
-        upd.bind(1, p.name);
-        upd.bind(2, p.url);
-        upd.bind(3, p.brand);
-        upd.bind(4, p.image_url);
-        upd.bind(5, p.price);
-        upd.bind(6, p.is_preorder ? 1 : 0);
-        upd.bind(7, p.preorder_release_date);
-        upd.bind(8, p.tracked ? 1 : 0);
-        upd.bind(9, p.fulfilment_channel);
-        upd.bind(10, now);
-        upd.bind(11, p.variation_id);
-        upd.exec();
-    }
-    return isNew;
+void Database::updateProductStatus(const Product& p) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    const std::int64_t now = nowSeconds();
+
+    // Enrichment-only update. Leaves `url` (canonical sitemap URL) untouched, and
+    // keeps the existing name when the browse value is empty (COALESCE on NULLIF).
+    SQLite::Statement upd(
+        *db_,
+        "UPDATE products SET"
+        " name = COALESCE(NULLIF(?, ''), name),"
+        " brand=?, image_url=?, price=?, is_preorder=?, preorder_release_date=?,"
+        " tracked=?, fulfilment_channel=?, last_seen=?"
+        " WHERE variation_id=?");
+    upd.bind(1, p.name);
+    upd.bind(2, p.brand);
+    upd.bind(3, p.image_url);
+    upd.bind(4, p.price);
+    upd.bind(5, p.is_preorder ? 1 : 0);
+    upd.bind(6, p.preorder_release_date);
+    upd.bind(7, p.tracked ? 1 : 0);
+    upd.bind(8, p.fulfilment_channel);
+    upd.bind(9, now);
+    upd.bind(10, p.variation_id);
+    upd.exec();
 }
 
 std::vector<std::string> Database::getTrackedOOSKeycodes() {
