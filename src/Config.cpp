@@ -67,6 +67,11 @@ Config Config::loadFromFile(const std::string& path) {
         getIf(s, "batch_delay_ms", d.batch_delay_ms);
         getIf(s, "instore_max", d.instore_max);
         getIf(s, "transport", d.transport);
+        getIf(s, "cookie", d.cookie);
+        getIf(s, "auth_token", d.auth_token);
+        getIf(s, "user_agent", d.user_agent);
+        getIf(s, "harvest_after_failures", d.harvest_after_failures);
+        getIf(s, "extra_headers", d.extra_headers);
     }
 
     if (j.contains("browser")) {

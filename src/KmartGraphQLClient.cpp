@@ -170,11 +170,13 @@ KmartGraphQLClient::BatchResult KmartGraphQLClient::queryAvailability(
     HttpResponse resp = transport_.postGraphQL(cfg_.graphql_url, payload);
     if (!resp.ok()) {
         if (resp.status_code == 403) {
-            // Akamai Bot Manager block. The "browser" transport is expected to
-            // pass; if you see this, you're likely on the "http" transport
-            // (curl-impersonate), which Akamai blocks on this endpoint.
-            result.error =
-                "HTTP 403 (Akamai bot block — use kmart.transport=\"browser\")";
+            // Akamai Bot Manager block — the replayed cookie jar is stale or
+            // missing. On the "http" transport this self-heals: after
+            // kmart.harvest_after_failures consecutive failures it re-harvests
+            // cookies via the browser and retries. Persistent 403s mean no
+            // valid cookie could be obtained (set kmart.cookie or check the
+            // browser harvester).
+            result.error = "HTTP 403 (Akamai bot block — stale/missing cookies)";
         } else {
             result.error = resp.error.empty()
                                ? ("HTTP " + std::to_string(resp.status_code))

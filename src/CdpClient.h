@@ -31,6 +31,18 @@ public:
     // IGatewayTransport: run the POST as an in-page fetch and return status+body.
     HttpResponse postGraphQL(const std::string& url, const std::string& jsonBody) override;
 
+    // Result of a cookie harvest: the kmart.com.au cookie jar plus the browser's
+    // own User-Agent (so an HTTP replay can match the client that produced them).
+    struct HarvestedCookies {
+        std::string cookie;      // "name=value; name=value; ..." ("" on failure)
+        std::string user_agent;  // navigator.userAgent of the harvest browser
+    };
+
+    // Re-navigate the browser (re-triggering Akamai's sensor) and return a fresh
+    // kmart.com.au cookie jar + the browser UA. Used by the HTTP transport to
+    // re-seed cookies after repeated failures. `cookie` is empty on failure.
+    HarvestedCookies harvestCookies();
+
     // Close the browser and remove the temp profile. Called by the destructor too.
     void shutdown();
 

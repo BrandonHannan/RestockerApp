@@ -18,7 +18,7 @@ The service is organised into five tiers:
 |------|----------------|----------|
 | **Discovery** | Find TCG products via the product sitemap, enrich status via Constructor browse (fast, ~30s) | [DiscoveryLoop.cpp](src/DiscoveryLoop.cpp), [SitemapClient.cpp](src/SitemapClient.cpp), [ConstructorClient.cpp](src/ConstructorClient.cpp) |
 | **Inventory** | Poll stock levels and detect restocks (event-driven — woken by discovery; ~5 min safety net) | [InventoryLoop.cpp](src/InventoryLoop.cpp), [KmartGraphQLClient.cpp](src/KmartGraphQLClient.cpp) |
-| **Transport** | Get requests past Akamai Bot Manager | [HttpClient.cpp](src/HttpClient.cpp), [CdpClient.cpp](src/CdpClient.cpp), [GatewayTransport.h](src/GatewayTransport.h) |
+| **Transport** | Get requests past Akamai Bot Manager (cookie replay by default; browser harvest/fallback) | [HttpClient.cpp](src/HttpClient.cpp), [KmartHttpTransport.cpp](src/KmartHttpTransport.cpp), [CdpClient.cpp](src/CdpClient.cpp), [GatewayTransport.h](src/GatewayTransport.h) |
 | **Notification** | Fan out restock alerts | [NotifierManager.cpp](src/NotifierManager.cpp), [DiscordNotifier.cpp](src/DiscordNotifier.cpp), [GenericWebhookNotifier.cpp](src/GenericWebhookNotifier.cpp) |
 | **Persistence / infra** | Store state, coordinate threads, config, shutdown | [Database.cpp](src/Database.cpp), [Config.cpp](src/Config.cpp), [StopToken.h](src/StopToken.h) |
 
@@ -41,7 +41,8 @@ How the code interacts with itself and with external systems.
 flowchart TD
   main["main.cpp<br/>(entry point)"] --> cfg["Config::loadFromFile"]
   main --> http["HttpClient<br/>(curl-impersonate)"]
-  main -. only if transport=browser .-> cdp["CdpClient → Chrome/Edge"]
+  main --> kht["KmartHttpTransport<br/>(cookie replay)"]
+  main -. cookie harvest / transport=browser .-> cdp["CdpClient → Chrome/Edge"]
   main --> dthread(["Discovery thread"])
   main --> ithread(["Inventory thread"])
   main --> stop["StopToken<br/>(SIGINT/SIGTERM)"]
@@ -65,9 +66,11 @@ flowchart TD
     iloop -->|"getTrackedOOSKeycodes"| db
     iloop --> kc["KmartGraphQLClient::queryAvailability"]
     kc --> gw{"IGatewayTransport<br/>postGraphQL"}
-    gw --> http
-    gw --> cdp
-    http --> kmart[("Kmart GraphQL<br/>api.kmart.com.au")]
+    gw --> kht
+    gw -. transport=browser .-> cdp
+    kht -->|"Cookie: jar (+ bearer)"| http2["HttpClient.postJson"]
+    kht -. "after N failures: harvest + persist cookie" .-> cdp
+    http2 --> kmart[("Kmart GraphQL<br/>api.kmart.com.au")]
     cdp --> kmart
     iloop --> ps["processStock<br/>(available &gt; previous?)"]
     ps -->|"getStock / setStock / recordAlert"| db
@@ -122,6 +125,7 @@ sequenceDiagram
   DB-->>I: [keycodes still OOS]
   I->>K: queryAvailability(batch)
   K->>T: postGraphQL(url, payload)
+  Note over T: http: POST with replayed Cookie jar (+ optional bearer);<br/>after N failures harvest fresh cookies via browser + persist, retry
   T-->>K: HTTP response (JSON)
   K-->>I: ChannelStock rows
 
@@ -163,10 +167,11 @@ RAII `CurlGlobal` wrapper ([line 84](src/main.cpp#L84)), then:
    validate webhook config.
 4. Opens the `Database`, creates a `StopToken`, and registers it as the global `g_stop` so the
    SIGINT/SIGTERM handler can request shutdown ([lines 123-127](src/main.cpp#L123)).
-5. Chooses the inventory transport ([lines 133-143](src/main.cpp#L133)): if
-   `kmart.transport == "browser"` it constructs a `CdpClient`; otherwise it uses the
-   `HttpClient`. Either way the result is exposed only through the `IGatewayTransport*` pointer
-   so `KmartGraphQLClient` doesn't care which one it got.
+5. Chooses the inventory transport: for `kmart.transport == "browser"` it constructs a
+   `CdpClient`; otherwise (default `"http"`) it constructs a `KmartHttpTransport` wrapping the
+   shared `HttpClient`, a lazy `CdpClient` cookie-harvester, and the `Database`. Either way the
+   result is exposed only through the `IGatewayTransport*` pointer so `KmartGraphQLClient`
+   doesn't care which one it got.
 6. Constructs the two loops and either runs one pass each (`--once`) or spawns a thread per loop
    and joins them ([lines 161-166](src/main.cpp#L161)).
 
@@ -277,29 +282,41 @@ one message per channel/location. The extra `getFindInStore` call runs only when
 actually fires (rare), so the per-store enrichment costs nothing on idle passes. Batching plus a
 per-batch delay keeps request volume polite.
 
-### Transport abstraction — [GatewayTransport.h](src/GatewayTransport.h), [HttpClient.cpp](src/HttpClient.cpp), [CdpClient.cpp](src/CdpClient.cpp)
+### Transport abstraction — [GatewayTransport.h](src/GatewayTransport.h), [KmartHttpTransport.cpp](src/KmartHttpTransport.cpp), [HttpClient.cpp](src/HttpClient.cpp), [CdpClient.cpp](src/CdpClient.cpp)
 
-**What:** Two interchangeable ways to deliver the Kmart GraphQL POST, behind one interface.
+**What:** Interchangeable ways to deliver the Kmart GraphQL POST past Akamai, behind one interface.
 
 **How:** [`IGatewayTransport`](src/GatewayTransport.h#L13) declares a single method,
 `postGraphQL(url, jsonBody) → HttpResponse`. `KmartGraphQLClient` holds only an
 `IGatewayTransport&`, and `main` decides at startup which concrete transport to plug in:
 
-- **`HttpClient`** — a libcurl wrapper that calls curl-impersonate to apply a Chrome TLS/JA3 +
-  HTTP-2 fingerprint (`impersonate_target`, default `chrome131`) along with realistic browser
-  headers. It's also the transport used by the discovery client and the notifiers.
-- **`CdpClient`** — launches a *real* headless-or-headful Chrome/Edge via the Chrome DevTools
-  Protocol, navigates to `kmart.com.au` to pick up genuine Akamai cookies, waits
-  `page_settle_ms` for the bot-sensor JS to validate, then runs the GraphQL `fetch()` from inside
-  the page context. The whole platform/websocket mess is hidden behind a PIMPL
-  ([CdpClient.h](src/CdpClient.h#L37)).
+- **`KmartHttpTransport`** (default, `transport: "http"`) — replays a valid **Akamai cookie jar**
+  over a single plain-HTTP path ([`HttpClient::postJsonRaw`](src/HttpClient.cpp): no impersonation,
+  an explicit `User-Agent`, no `sec-ch-ua*` headers) — the exact shape of the working curl. It holds
+  a swappable credential set `{cookie, user_agent, token?}`, seeded from the last harvested set
+  (DB) or config, and sends `Cookie` + (only if configured) `Authorization: Bearer`. It
+  **self-heals**: after `kmart.harvest_after_failures` consecutive failures it calls the `CdpClient`
+  harvester ([`harvestCookies`](src/CdpClient.cpp)) for a fresh cookie **and the browser's UA**,
+  adopts that pair (dropping any token — cookies alone suffice), persists both via
+  [`Database::setKmartCookie`/`setKmartUserAgent`](src/Database.cpp), and retries (a short
+  harvest→replay loop absorbs the delay before Akamai validates a new `_abck`).
+- **`HttpClient`** — the libcurl wrapper. Its `get`/`postJson` apply a curl-impersonate Chrome
+  TLS/JA3 + HTTP-2 fingerprint (`impersonate_target`, default `chrome131`) for the discovery client
+  and notifiers; `postJsonRaw` (used by the gateway replay) sends a **plain** request with no
+  impersonation and an explicit UA — the captured-request shape.
+- **`CdpClient`** (`transport: "browser"`, also the http transport's cookie harvester) — launches
+  a *real* headless-or-headful Chrome/Edge via the Chrome DevTools Protocol, navigates to
+  `kmart.com.au` to pick up genuine Akamai cookies, waits `page_settle_ms` for the bot-sensor JS to
+  validate, then either reads the cookie jar back (`Network.getAllCookies`) or runs the GraphQL
+  `fetch()` from inside the page context. The whole platform/websocket mess is hidden behind a
+  PIMPL ([CdpClient.h](src/CdpClient.h#L37)).
 
-**Why:** Kmart sits behind **Akamai Bot Manager**, which fingerprints the TLS handshake and HTTP
-client. curl-impersonate gets *close* enough for many endpoints, but Akamai denylists even that on
-the GraphQL gateway — so the default (`transport: "browser"`) routes through an actual browser,
-whose fingerprint and cookies are genuine and therefore pass. The interface lets the service swap
-strategies via one config line without the GraphQL logic knowing or caring; the HTTP path stays as
-a lighter fallback.
+**Why:** Kmart sits behind **Akamai Bot Manager**. The bot challenge that matters here lives in the
+**cookies** the sensor JS solves in a browser — once you replay a valid jar, a plain HTTP POST
+passes. So the default keeps the lightweight HTTP path and only spins up a browser to (re)harvest
+cookies when they go stale, persisting the result so it survives restarts. The `"browser"` mode
+(every call through CDP) remains as a fallback. The interface lets the service swap strategies via
+one config line without the GraphQL logic knowing or caring.
 
 ### Persistence — [Database.cpp](src/Database.cpp) + [Models.h](src/Models.h)
 
@@ -317,7 +334,9 @@ a lighter fallback.
 - **`inventory_state`** — `(keycode, channel, location_id)` composite PK with `available` and
   `updated_at`; `location_id` is `''` for national HOME_DELIVERY / Click-and-Collect totals.
 - **`alerts`** — an append-only log of every fired restock (prev → new, timestamp).
-- **`app_meta`** — key/value store holding the Constructor.io `session_id` and sequence counter.
+- **`app_meta`** — key/value store holding the Constructor.io `session_id` and sequence counter,
+  plus `kmart_cookie` (the latest Akamai cookie jar harvested for the http transport, persisted so
+  it survives restarts).
 
 Every public method takes `std::lock_guard<std::mutex> lock(mtx_)`.
 [`insertProductIfAbsent`](src/Database.cpp) inserts a sitemap-discovered product's base fields and
@@ -372,7 +391,10 @@ that everything else uses, and both consume the same enriched `RestockEvent`.
 structs — `ConstructorConfig`, `KmartConfig`, `BrowserConfig`, `IntervalsConfig`,
 `NotifiersConfig`, `HttpConfig`, `DatabaseConfig` — each with sensible defaults baked in
 ([Config.h](src/Config.h)). It throws `std::runtime_error` on a missing file, parse failure, or
-invalid values. There is no hot-reload; config is read-only after load.
+invalid values. There is no hot-reload; config is read-only after load. `KmartConfig` carries the
+http-transport credentials: `cookie` (captured Akamai jar), `auth_token` (optional bearer),
+`user_agent` (UA paired with the cookie, default the Kmart iPhone app), `harvest_after_failures`
+(default 3), and `extra_headers`; `config.json` is gitignored so these secrets stay local.
 
 **Why:** Every tunable — poll intervals and jitter, batch sizes, the impersonation target, the
 browser settle delay, the sitemap/browse discovery settings, webhook URLs — lives in one place
@@ -404,10 +426,10 @@ the loops never need to lock around config.
 |--------|---------|----------|---------|---------|
 | **Kmart product sitemap** (`www.kmart.com.au/sitemap-index.xml` + `product-sitemap-*.xml`) | New-product discovery (keycode + URL) | HTTPS HEAD-diff, GET changed only, via curl-impersonate | ~30s (sitemap_seconds) | 15s |
 | **Constructor.io browse** (`ac.cnstrc.com`) | Product status (pre-order / fulfilment / regional / price / image / name) | HTTPS GET via curl-impersonate | new products + full refresh ~5 min | 15s |
-| **Kmart GraphQL** (`api.kmart.com.au/gateway/graphql`) | `getProductAvailability` (HD/CnC/in-store stock) + `getFindInStore` (store name/phone enrichment, only on a restock) | HTTPS via browser (CDP) or curl-impersonate | woken by discovery; ~5 min safety net | 15s / CDP 30s per command |
+| **Kmart GraphQL** (`api.kmart.com.au/gateway/graphql`) | `getProductAvailability` (HD/CnC/in-store stock) + `getFindInStore` (store name/phone enrichment, only on a restock) | HTTPS plain cookie-replay POST (default); browser (CDP) only to re-harvest cookies or as `transport="browser"` fallback | woken by discovery; ~5 min safety net | 15s / CDP 30s per command |
 | **Discord webhook** | Restock alerts | HTTPS POST (embed JSON) | per restock | 15s |
 | **Generic HTTP endpoint** | Restock alerts | HTTPS POST (flat JSON + custom headers) | per restock | 15s |
-| **Chrome / Edge** (local) | Akamai evasion for the GraphQL POST | Chrome DevTools Protocol over WebSocket | with each inventory pass | `cdp_timeout_ms` (30s) |
+| **Chrome / Edge** (local) | Cookie harvest for the http transport (or Akamai evasion for the GraphQL POST in `transport="browser"`) | Chrome DevTools Protocol over WebSocket | only on cookie (re)harvest, or each pass in browser mode | `cdp_timeout_ms` (30s) |
 | **SQLite** (`restocker.db`, local file) | Persistence + cross-thread state | File I/O (WAL) | every DB op | `busy_timeout` 5s |
 
 ---

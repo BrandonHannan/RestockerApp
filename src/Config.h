@@ -46,10 +46,28 @@ struct KmartConfig {
     int batch_delay_ms = 1000;
     // Max nearby stores to list in an alert (from the getFindInStore enrichment).
     int instore_max = 8;
-    // How to deliver the gateway POST: "browser" (real headless browser via CDP,
-    // defeats Akamai) or "http" (curl-impersonate; blocked by Akamai on this
-    // endpoint, kept as a fallback).
-    std::string transport = "browser";
+    // How to deliver the gateway POST: "http" (cookie-replay over curl-impersonate;
+    // default) or "browser" (real headless browser via CDP, kept as a fallback).
+    std::string transport = "http";
+    // Captured Akamai cookie jar ("name=value; name=value; ...") replayed on the
+    // gateway POST. Seeds the "http" transport; refreshed automatically by a browser
+    // re-harvest after repeated failures (the freshest value is persisted to the DB).
+    std::string cookie;
+    // Optional OAuth bearer token. When non-empty it is sent as "Authorization:
+    // Bearer <auth_token>". Leave empty if the cookies alone suffice.
+    std::string auth_token;
+    // User-Agent for the "http" transport's app-mode replay. Must match the client
+    // that produced `cookie`/`auth_token` (the Kmart mobile app, by default) so the
+    // Akamai cookies validate.
+    std::string user_agent =
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Mobile/15E148 KmartApp/3.4.3";
+    // Consecutive gateway failures on the "http" transport before opening a browser
+    // to harvest fresh cookies and retry.
+    int harvest_after_failures = 3;
+    // Optional extra headers added to the gateway POST (e.g. a custom user-agent).
+    // Most captured tracing headers (newrelic/traceparent) are not required.
+    std::map<std::string, std::string> extra_headers;
 };
 
 struct BrowserConfig {

@@ -57,6 +57,14 @@ public:
     std::string getOrCreateSessionId();
     long nextSessionSeq();  // monotonically increasing per call
 
+    // Last Akamai cookie jar (and the browser User-Agent that produced it)
+    // harvested for the "http" gateway transport, persisted across restarts.
+    // Empty string if never harvested.
+    std::string getKmartCookie();
+    void setKmartCookie(const std::string& cookie);
+    std::string getKmartUserAgent();
+    void setKmartUserAgent(const std::string& user_agent);
+
 private:
     std::string getMeta(const std::string& key);
     void setMeta(const std::string& key, const std::string& value);

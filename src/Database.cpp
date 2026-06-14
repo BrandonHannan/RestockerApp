@@ -257,4 +257,24 @@ long Database::nextSessionSeq() {
     return seq;
 }
 
+std::string Database::getKmartCookie() {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return getMeta("kmart_cookie");
+}
+
+void Database::setKmartCookie(const std::string& cookie) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    setMeta("kmart_cookie", cookie);
+}
+
+std::string Database::getKmartUserAgent() {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return getMeta("kmart_user_agent");
+}
+
+void Database::setKmartUserAgent(const std::string& user_agent) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    setMeta("kmart_user_agent", user_agent);
+}
+
 }  // namespace restocker

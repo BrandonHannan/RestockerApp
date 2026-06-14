@@ -92,8 +92,11 @@ Generic key/value store for small persistent state.
 | `k` | TEXT (PK) | Key. |
 | `v` | TEXT | Value. |
 
-Current keys: **`constructor_session_id`** (persistent anonymous UUID for the Constructor API) and
-**`constructor_session_seq`** (monotonic per-request counter).
+Current keys: **`constructor_session_id`** (persistent anonymous UUID for the Constructor API),
+**`constructor_session_seq`** (monotonic per-request counter), and **`kmart_cookie`** +
+**`kmart_user_agent`** (the latest cookie jar harvested by the browser for the `"http"` gateway
+transport, plus the harvest browser's User-Agent it must be replayed with, persisted so they
+survive restarts).
 
 ---
 
@@ -149,6 +152,7 @@ erDiagram
 | `insertProductIfAbsent` | **W** `products` (base row; `INSERT OR IGNORE`) | DiscoveryLoop — sitemap sweep |
 | `updateProductStatus` | **W** `products` (enrichment columns only) | DiscoveryLoop — browse cross-reference |
 | `getOrCreateSessionId` / `nextSessionSeq` | **R/W** `app_meta` | DiscoveryLoop — before each browse sweep |
+| `getKmartCookie` / `setKmartCookie` / `getKmartUserAgent` / `setKmartUserAgent` | **R/W** `app_meta` (`kmart_cookie`, `kmart_user_agent`) | KmartHttpTransport — seed at startup; persist the cookie + UA after a browser re-harvest |
 | `getTrackedOOSKeycodes` | **R** `products` + `inventory_state` | InventoryLoop — start of pass |
 | `getStock` | **R** `inventory_state` | InventoryLoop — per channel/location row |
 | `setStock` | **W** `inventory_state` (`ON CONFLICT … DO UPDATE`) | InventoryLoop — every row, always |
@@ -230,8 +234,9 @@ Key rules implied by the flow:
   `inventory_state` row exists — so a product first seen *already in stock* still alerts.
 - **`recordAlert` (the only write to `alerts`) runs only after a notification fires** — it is the
   audit trail, not part of detection.
-- **`app_meta` is touched only by the discovery side** (the Constructor session); it is never read
-  or written on the notification path.
+- **`app_meta` is touched by the discovery side** (the Constructor session) **and by the inventory
+  transport** (`kmart_cookie`, seeded at startup and rewritten after a browser cookie re-harvest);
+  it is not part of restock *detection*.
 - The `tracked` flag (set by `updateProductStatus` from the browse `stateOOS` map) is what lets a
   product enter or leave the `getTrackedOOSKeycodes` watch-list between passes.
 

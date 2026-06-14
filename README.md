@@ -170,42 +170,67 @@ can see:
 ### Defeating Akamai Bot Manager (inventory tier)
 
 The inventory-tier GraphQL gateway (`api.kmart.com.au/gateway/graphql`) is fronted by
-**Akamai Bot Manager**, which **fingerprints the TLS (JA3/JA4) + HTTP-2 client**, not just
-headers. Measured behaviour (live, postcode 4221):
+**Akamai Bot Manager**, which validates the request against an **Akamai cookie set**
+(`_abck`, `bm_sz`, `bm_s`, `bm_sv`, `ak_bmsc`, …) the sensor JS solves in a browser. Once you
+have a valid cookie jar, a **plain HTTP POST passes (200)** — the bot challenge is in the
+cookies, not (only) the TLS fingerprint. So the default transport replays a captured cookie
+jar over the curl-impersonate HTTP client; the browser is used only to (re)harvest cookies.
 
-| Client | Result |
-|---|---|
-| Real browser / .NET `System.Net` | **200** |
-| curl-impersonate — Chrome/Firefox/Safari/Edge, h2 **and** h1.1 | **403** |
-| WinHTTP, stock libcurl | **403** |
+**Default `kmart.transport="http"` (cookie replay).** Every request is a **plain HTTP POST** (no
+curl-impersonation) carrying `Cookie: <jar>`, a `User-Agent` matching the client that produced the
+jar, and — only if set — `Authorization: Bearer <kmart.auth_token>`, plus `accept-language: en-AU`,
+`priority: u=3, i`, `origin`/`referer`, `sec-fetch-*`. **No `sec-ch-ua*` headers.** This is the exact
+shape of the working `curl`/Bruno call. The cookie + UA (+ optional token) must come as a **matched
+set** — Akamai validates the cookies against the client.
 
-Akamai here denylists even curl-impersonate's Chrome fingerprint (verified against
-curl-impersonate's own binary). **The only client that passes is a real browser.** So the
-inventory tier issues the GraphQL call from inside a **real headless browser** via the Chrome
-DevTools Protocol (CDP):
+The credential set is swappable and **self-healing**:
+
+- **Seed** from `kmart.cookie` + `kmart.user_agent` (+ optional `kmart.auth_token`) — e.g. a captured
+  mobile-app request — or from the last harvested set persisted in the DB.
+- **Re-harvest** after `kmart.harvest_after_failures` consecutive failures: a real browser navigates
+  `kmart.com.au`, harvests a fresh cookie jar via `Network.getAllCookies` **plus its own
+  User-Agent**, and the transport adopts that pair (no token — **cookies alone suffice**), persists
+  it to `app_meta` (`kmart_cookie` + `kmart_user_agent`, so it survives restarts), and retries. A
+  short harvest→replay loop tolerates Akamai needing a beat to validate a freshly issued `_abck`. No
+  login is required — a plain browser session receives the Akamai cookies.
+
+**Cookie harvest / `kmart.transport="browser"` fallback** — both use a real headless-or-headful
+browser via the Chrome DevTools Protocol (CDP):
 
 1. Launch Chrome/Edge with remote debugging (`--remote-allow-origins=* --remote-debugging-port=0`).
 2. Connect to its CDP WebSocket (driven by the libcurl we already link — `ws`/`wss` support).
 3. Navigate to `kmart.com.au` so Akamai sets its cookies and the page has the right origin.
-4. Run the GraphQL query **in the page context** as a `fetch(..., {credentials:'include'})` — it
-   carries the genuine browser TLS fingerprint + cookies, so it returns **200**.
+4. Either read the cookie jar back (`Network.getAllCookies`, http transport's harvester) or, in
+   `"browser"` mode, run the GraphQL query **in the page context** as a
+   `fetch(..., {credentials:'include'})` so it carries the genuine browser cookies and returns **200**.
 
-Two details that make it reliable:
+Two details that make the browser path reliable:
 - **Headful, not headless.** Akamai serves *"Access Denied"* to `--headless` Chrome, so the
   browser runs as a real (visible) window by default (`browser.headless=false`). On a headless
   Linux host, run under a virtual display, e.g. `xvfb-run ./RestockerApp`.
-- **GET, not POST.** The query is sent as a GraphQL **GET** (params in the query string), which is
-  a CORS-"simple" request — so it triggers **no preflight `OPTIONS`**, which Akamai intermittently
-  blocks. `CdpClient` converts the POST payload to a GET internally; the gateway answers queries
-  over GET.
+- **GET, not POST.** In `"browser"` mode the query is sent as a GraphQL **GET** (params in the
+  query string), a CORS-"simple" request — so it triggers **no preflight `OPTIONS`**, which Akamai
+  intermittently blocks. `CdpClient` converts the POST payload to a GET internally.
 
-Implemented in [`src/CdpClient.cpp`](src/CdpClient.cpp). The browser is auto-detected (Chrome,
-then Edge; Linux searches `PATH` for `google-chrome`/`chromium`). No extra dependency — the CDP
-WebSocket reuses libcurl, and process spawning uses OS APIs.
+Implemented in [`src/KmartHttpTransport.cpp`](src/KmartHttpTransport.cpp) (cookie replay) and
+[`src/CdpClient.cpp`](src/CdpClient.cpp) (browser harvest/fallback). The browser is auto-detected
+(Chrome, then Edge; Linux searches `PATH` for `google-chrome`/`chromium`). No extra dependency —
+the CDP WebSocket reuses libcurl, and process spawning uses OS APIs.
 
 Config:
-- `kmart.transport` — `"browser"` (default, uses CDP) or `"http"` (curl-impersonate; blocked by
-  Akamai on this endpoint, kept as a fallback).
+- `kmart.transport` — `"http"` (default, cookie replay with browser re-harvest) or `"browser"`
+  (route every call through CDP).
+- `kmart.cookie` — a captured Akamai cookie jar (`"name=value; name=value; ..."`) seeding the
+  transport. Leave empty to harvest one via the browser on first use. `config.json` is gitignored, so
+  the secret stays local.
+- `kmart.auth_token` — optional bearer token; sent as `Authorization: Bearer <token>` when set
+  (cookies alone generally suffice, and harvested credentials carry no token).
+- `kmart.user_agent` — `User-Agent` paired with `kmart.cookie`; must match the client that produced
+  the cookie (defaults to the Kmart iPhone app UA). Harvested cookies use the harvest browser's own UA.
+- `kmart.harvest_after_failures` — consecutive failures before a browser cookie re-harvest (default
+  `3`; lower it to self-heal sooner, raise it to tolerate transient blips before launching a browser).
+- `kmart.extra_headers` — optional extra headers on the gateway POST (most captured tracing headers
+  are not required).
 - `browser.executable_path` — path to Chrome/Edge/Chromium; empty = auto-detect.
 - `browser.headless` — `false` by default (headful evades Akamai); `true` only with a stealth setup.
 - `browser.nav_url` / `browser.page_settle_ms` — origin to load and how long to let Akamai's

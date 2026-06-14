@@ -94,24 +94,37 @@ std::map<std::string, std::string> HttpClient::baseHeaders() const {
 
 HttpResponse HttpClient::get(const std::string& url,
                              const std::map<std::string, std::string>& extra_headers) {
-    return perform(url, /*post=*/false, /*head=*/false, /*body=*/"", extra_headers);
+    return perform(url, /*post=*/false, /*head=*/false, /*body=*/"", extra_headers, SendOpts{});
 }
 
 HttpResponse HttpClient::head(const std::string& url,
                               const std::map<std::string, std::string>& extra_headers) {
-    return perform(url, /*post=*/false, /*head=*/true, /*body=*/"", extra_headers);
+    return perform(url, /*post=*/false, /*head=*/true, /*body=*/"", extra_headers, SendOpts{});
 }
 
 HttpResponse HttpClient::postJson(const std::string& url, const std::string& body,
                                   const std::map<std::string, std::string>& extra_headers) {
     auto merged = extra_headers;
     merged.emplace("Content-Type", "application/json");  // don't override caller's
-    return perform(url, /*post=*/true, /*head=*/false, body, merged);
+    return perform(url, /*post=*/true, /*head=*/false, body, merged, SendOpts{});
+}
+
+HttpResponse HttpClient::postJsonRaw(const std::string& url, const std::string& body,
+                                     const std::map<std::string, std::string>& headers,
+                                     const std::string& user_agent) {
+    auto merged = headers;
+    merged.emplace("Content-Type", "application/json");  // don't override caller's
+    SendOpts opts;
+    opts.include_base_headers = false;  // send ONLY the caller's headers
+    opts.impersonate = false;           // plain curl TLS (matches the captured request)
+    opts.user_agent = user_agent;
+    return perform(url, /*post=*/true, /*head=*/false, body, merged, opts);
 }
 
 HttpResponse HttpClient::perform(const std::string& url, bool post, bool head,
                                  const std::string& body,
-                                 const std::map<std::string, std::string>& extra_headers) {
+                                 const std::map<std::string, std::string>& extra_headers,
+                                 const SendOpts& opts) {
     HttpResponse out;
 
     CURL* curl = curl_easy_init();
@@ -122,7 +135,7 @@ HttpResponse HttpClient::perform(const std::string& url, bool post, bool head,
 
     // Apply the Chrome TLS/JA3 + HTTP-2 fingerprint. default_headers=0 keeps our
     // own header set (proven sufficient) and only sets the transport fingerprint.
-    if (cfg_.impersonate) {
+    if (opts.impersonate) {
         CURLcode ic = curl_easy_impersonate(curl, cfg_.impersonate_target.c_str(),
                                             /*default_headers=*/0);
         if (ic != CURLE_OK) {
@@ -133,7 +146,8 @@ HttpResponse HttpClient::perform(const std::string& url, bool post, bool head,
         }
     }
 
-    auto merged = baseHeaders();
+    std::map<std::string, std::string> merged;
+    if (opts.include_base_headers) merged = baseHeaders();
     for (const auto& kv : extra_headers) merged[kv.first] = kv.second;
 
     SList headers;
@@ -155,9 +169,10 @@ HttpResponse HttpClient::perform(const std::string& url, bool post, bool head,
     curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, static_cast<long>(CURLSSLOPT_NATIVE_CA));
 
     // Only force a UA when not impersonating; otherwise the impersonate profile
-    // governs it.
-    if (!cfg_.impersonate && !cfg_.user_agent.empty()) {
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, cfg_.user_agent.c_str());
+    // governs it. A per-request UA (raw path) wins over the configured default.
+    if (!opts.impersonate) {
+        const std::string& ua = !opts.user_agent.empty() ? opts.user_agent : cfg_.user_agent;
+        if (!ua.empty()) curl_easy_setopt(curl, CURLOPT_USERAGENT, ua.c_str());
     }
 
     if (!cfg_.proxy.empty()) {

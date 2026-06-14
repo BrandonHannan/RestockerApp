@@ -19,6 +19,7 @@
 #include "HttpClient.h"
 #include "InventoryLoop.h"
 #include "KmartGraphQLClient.h"
+#include "KmartHttpTransport.h"
 #include "NotifierManager.h"
 #include "SitemapClient.h"
 #include "StopToken.h"
@@ -144,16 +145,23 @@ int main(int argc, char** argv) {
     ConstructorClient constructor(cfg.constructor, http, cfg.kmart.target_state);
     SitemapClient sitemap(cfg.constructor, http);
 
-    // Inventory transport: real headless browser (CDP) to defeat Akamai, or the
-    // curl-impersonate HTTP path as a fallback.
+    // Inventory transport. Default "http": replay captured Akamai cookies (+ optional
+    // bearer) over curl-impersonate, with a browser cookie re-harvest on repeated
+    // failure. "browser": route every call through a real headless browser (CDP).
     std::unique_ptr<CdpClient> cdp;
-    IGatewayTransport* gateway = &http;
+    std::unique_ptr<KmartHttpTransport> kmart_http;
+    IGatewayTransport* gateway = nullptr;
     if (cfg.kmart.transport == "browser") {
         cdp = std::make_unique<CdpClient>(cfg.browser);
         gateway = cdp.get();
         spdlog::info("inventory transport: browser (CDP)");
     } else {
-        spdlog::info("inventory transport: http (curl-impersonate)");
+        // The CdpClient here is the lazy cookie harvester — it only spawns a browser
+        // when the HTTP path fails repeatedly (or has no seed cookie).
+        cdp = std::make_unique<CdpClient>(cfg.browser);
+        kmart_http = std::make_unique<KmartHttpTransport>(cfg.kmart, http, cdp.get(), db);
+        gateway = kmart_http.get();
+        spdlog::info("inventory transport: http (cookie-replay, browser re-harvest on failure)");
     }
 
     KmartGraphQLClient kmart(cfg.kmart, *gateway);

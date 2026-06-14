@@ -24,7 +24,12 @@
     "batch_size": 30,
     "batch_delay_ms": 1000,
     "instore_max": 8,
-    "transport": "browser"
+    "transport": "http",
+    "cookie": "",
+    "auth_token": "",
+    "user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 KmartApp/3.4.3",
+    "harvest_after_failures": 3,
+    "extra_headers": {}
   },
   "browser": {
     "executable_path": "",

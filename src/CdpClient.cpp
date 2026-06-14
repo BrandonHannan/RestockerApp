@@ -490,6 +490,57 @@ HttpResponse CdpClient::postGraphQL(const std::string& url, const std::string& j
     return out;
 }
 
+CdpClient::HarvestedCookies CdpClient::harvestCookies() {
+    HarvestedCookies out;
+    if (!ensureReady()) {
+        spdlog::error("CdpClient: harvestCookies failed (CDP launch/connect failed)");
+        return out;
+    }
+
+    // Re-navigate so Akamai's sensor re-runs and (re)issues a fresh cookie jar;
+    // ensureReady() only navigates on the initial connect, so repeated harvests
+    // would otherwise return the same cookies.
+    impl_->navigate();
+
+    // Network.getAllCookies returns the whole jar; enable the domain first so the
+    // command is available across Chrome versions.
+    impl_->command("Network.enable", json::object(), true, impl_->cfg.cdp_timeout_ms);
+    json resp = impl_->command("Network.getAllCookies", json::object(), true,
+                               impl_->cfg.cdp_timeout_ms);
+    if (resp.is_null() || !resp.contains("result") ||
+        !resp["result"].contains("cookies") || !resp["result"]["cookies"].is_array()) {
+        spdlog::error("CdpClient: Network.getAllCookies returned no cookies");
+        return out;
+    }
+
+    for (const auto& c : resp["result"]["cookies"]) {
+        std::string domain = c.value("domain", std::string());
+        if (domain.find("kmart.com.au") == std::string::npos) continue;
+        std::string name = c.value("name", std::string());
+        if (name.empty()) continue;
+        if (!out.cookie.empty()) out.cookie += "; ";
+        out.cookie += name + "=" + c.value("value", std::string());
+    }
+
+    // Capture the browser's UA so the HTTP replay matches the harvest client.
+    json ua = impl_->command("Runtime.evaluate",
+                             {{"expression", "navigator.userAgent"}, {"returnByValue", true}},
+                             true, impl_->cfg.cdp_timeout_ms);
+    if (ua.contains("result") && ua["result"].contains("result") &&
+        ua["result"]["result"].contains("value") &&
+        ua["result"]["result"]["value"].is_string()) {
+        out.user_agent = ua["result"]["result"]["value"].get<std::string>();
+    }
+
+    if (out.cookie.empty()) {
+        spdlog::warn("CdpClient: harvested no kmart.com.au cookies");
+    } else {
+        spdlog::info("CdpClient: harvested {} bytes of kmart.com.au cookies (ua='{}')",
+                     out.cookie.size(), out.user_agent);
+    }
+    return out;
+}
+
 void CdpClient::shutdown() {
     if (impl_->ws) {
         // Best-effort graceful close.
