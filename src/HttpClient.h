@@ -37,6 +37,14 @@ public:
                              const std::map<std::string, std::string>& headers,
                              const std::string& user_agent);
 
+    // GET with ONLY the caller-supplied headers (no desktop base headers) and
+    // impersonation disabled, sending `user_agent` verbatim. The GET analogue of
+    // postJsonRaw — used to replay captured mobile-app GETs (e.g. the BigW
+    // availability/stores endpoints) with their cookie jar + app User-Agent.
+    HttpResponse getRaw(const std::string& url,
+                        const std::map<std::string, std::string>& headers,
+                        const std::string& user_agent);
+
     // IGatewayTransport: POST GraphQL via the curl-impersonate HTTP path.
     HttpResponse postGraphQL(const std::string& url, const std::string& jsonBody) override {
         return postJson(url, jsonBody);

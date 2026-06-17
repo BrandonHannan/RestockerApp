@@ -1,12 +1,18 @@
 # RestockerApp — How the C++ Service Works
 
 RestockerApp is a standalone C++17 service that watches Pokémon Trading Card Game
-products on the **Kmart Australia** storefront and fires webhook alerts (Discord and/or a
-generic HTTP endpoint) the moment an item comes back into stock. It runs continuously as two
-independent polling loops backed by a local SQLite database.
+products on Australian retailers — **Kmart** and **BigW** — and fires webhook alerts (Discord
+and/or a generic HTTP endpoint) the moment an item comes back into stock. It runs continuously as
+per-retailer discovery + inventory loops backed by a single local SQLite database.
 
 This document explains the architecture end-to-end: the component layout, the runtime flow, and
-*why* each piece is built the way it is. All source lives under [src/](src/).
+*why* each piece is built the way it is. The narrative below describes the **Kmart** pipeline in
+detail; the **BigW** pipeline (see [§9](#9-bigw-distributor)) mirrors the same discovery → inventory
+→ notify shape with retailer-specific clients, and both share the database, the notifier set, and
+the restock-decision engine. All source lives under [src/](src/).
+
+A product's identity across the shared tables is the `(distributor, product_id)` pair
+(`distributor`: 1 = Kmart, 2 = BigW); see the [`Distributor`](src/Models.h) enum.
 
 ---
 
@@ -243,22 +249,24 @@ and calls `KmartGraphQLClient::queryAvailability` per batch. The GraphQL client 
 `CLICK_AND_COLLECT` fulfilment methods), sends it through the `IGatewayTransport`, and parses the
 response into `ChannelStock` rows.
 
-The rows are then **grouped by keycode** and each product is handled by
-[`processProduct`](src/InventoryLoop.cpp#L37), which fires **one consolidated alert per product**:
+The rows are then **grouped by keycode** and each product is handled by the shared
+[`processRestock`](src/RestockEngine.cpp) helper (extracted so Kmart and BigW share one copy of the
+alert logic), which fires **one consolidated alert per product**:
 
 ```cpp
 for (const auto& s : rows) {
-    int prev = db_.getStock(s.keycode, s.channel, s.location_id).value_or(0);
+    int prev = db_.getStock(distributor, s.keycode, s.channel, s.location_id).value_or(0);
     if (s.available > prev) restocked = true;   // any channel increasing triggers it
     // capture HOME_DELIVERY / CLICK_AND_COLLECT totals + per-store numeric units
     db_.setStock(s);                            // always persist the new baseline
 }
 if (restocked) {
     RestockEvent e{...};                        // name, url, image, price, pre-order date
-    int channel = db_.getProduct(keycode)->fulfilment_channel;
-    if (channel == 2 && numericByLocation.empty()) return false;  // in-store only: need nearby stock
-    // build stores[] from numericByLocation (units > 0 only), names/phone from
-    // getFindInStore, sort by units desc, cap to kmart.instore_max
+    int channel = db_.getProduct(distributor, keycode)->fulfilment_channel;
+    if (channel == 2 && numericByLocation.empty()) return false;  // in-store/pickup only: need nearby stock
+    // build stores[] from numericByLocation (units > 0 only), names/phone from the
+    // storeEnrich callback (Kmart getFindInStore; BigW cached stores list), sort by
+    // units desc, cap to instore_max
     notifiers_.notifyAll(e);
     db_.recordAlert(e);
 }
@@ -326,17 +334,22 @@ one config line without the GraphQL logic knowing or caring.
 ([lines 43-45](src/Database.cpp#L43)): `journal_mode=WAL`, `busy_timeout=5000`,
 `foreign_keys=ON`, then creates the schema:
 
-- **`products`** — `variation_id` (keycode) PK, name/url/brand/`image_url`/price, pre-order
-  fields, a `tracked` flag (0 when out of stock in `kmart.target_state`), a `fulfilment_channel`
-  column (Kmart FulfilmentChannel; 0 = unknown), and `first_seen`/`last_seen`. (`image_url` and
-  `fulfilment_channel` are added by guarded `ALTER TABLE` migrations so existing databases upgrade
-  in place.)
-- **`inventory_state`** — `(keycode, channel, location_id)` composite PK with `available` and
-  `updated_at`; `location_id` is `''` for national HOME_DELIVERY / Click-and-Collect totals.
-- **`alerts`** — an append-only log of every fired restock (prev → new, timestamp).
-- **`app_meta`** — key/value store holding the Constructor.io `session_id` and sequence counter,
-  plus `kmart_cookie` (the latest Akamai cookie jar harvested for the http transport, persisted so
-  it survives restarts).
+- **`products`** — `(distributor, product_id)` composite PK, name/url/brand/`image_url`/price,
+  pre-order fields, a `tracked` flag (0 when out of stock in `kmart.target_state`), a
+  `fulfilment_channel` column (shared 2/3/5 enum; 0 = unknown), and `first_seen`/`last_seen`.
+- **`inventory_state`** — `(distributor, keycode, channel, location_id)` composite PK with
+  `available` and `updated_at`; `location_id` is `''` for national HOME_DELIVERY / Click-and-Collect
+  totals.
+- **`alerts`** — an append-only log of every fired restock (`distributor`, prev → new, timestamp).
+- **`app_meta`** — key/value store holding `schema_version` (the multi-distributor migration guard),
+  the Constructor.io `session_id` and sequence counter, and per-retailer `{kmart,bigw}_cookie` /
+  `{kmart,bigw}_user_agent` (the latest Akamai cookie jar + UA harvested for each http transport,
+  persisted so they survive restarts).
+
+The `variation_id` → `product_id` rename and the `distributor` columns are applied to existing
+databases by [`migrateToV1`](src/Database.cpp) — a one-time, transactional table rebuild gated on
+`schema_version`. (`image_url` and `fulfilment_channel` are still added by the earlier guarded
+`ALTER TABLE` migrations so pre-distributor databases upgrade in place first.)
 
 Every public method takes `std::lock_guard<std::mutex> lock(mtx_)`.
 [`insertProductIfAbsent`](src/Database.cpp) inserts a sitemap-discovered product's base fields and
@@ -461,8 +474,42 @@ RestockerApp --discovery-only   # only the discovery loop
 RestockerApp --inventory-only   # only the inventory loop
 RestockerApp --dry-run          # detect restocks but don't POST to notifiers
 RestockerApp --test-notify      # send a synthetic restock to all notifiers and exit
+RestockerApp --distributor bigw # run only one retailer's loops (all|kmart|bigw)
 RestockerApp --config my.json   # use a specific config file (default config.json)
 ```
 
 A typical first run is `--test-notify` (verify webhooks), then `--once --discovery-only`
 (populate the `products` table), then the full service.
+
+---
+
+## 9. BigW distributor
+
+BigW is a second retailer running alongside Kmart, gated by the `bigw` config block
+(`"enabled": true`). It reuses the shared `Database`, `NotifierManager`, the
+[`processRestock`](src/RestockEngine.cpp) engine, and a second `StopToken`, but has its own clients
+and loops on their own threads. The design is parallel rather than abstracted behind one interface
+because the two retailers' discovery sources, request shapes, and URL handling differ too much to
+share usefully.
+
+| Tier | BigW code | Notes |
+|------|-----------|-------|
+| **Discovery** | [BigWDiscoveryLoop.cpp](src/BigWDiscoveryLoop.cpp), [BigWSearchClient.cpp](src/BigWSearchClient.cpp), [BigWSitemapResolver.cpp](src/BigWSitemapResolver.cpp) | Search API is the source of truth (`POST search/v1/search`); the `EssentialSafety: "For ages 6+"` spec is the genuine-TCG filter; the product URL is resolved from the BigW sitemaps by trailing `/p/<id>`. |
+| **Inventory** | [BigWInventoryLoop.cpp](src/BigWInventoryLoop.cpp), [BigWAvailabilityClient.cpp](src/BigWAvailabilityClient.cpp), [BigWStoresClient.cpp](src/BigWStoresClient.cpp) | Per-product GET (`availability/v0/product/{id}`); uses each channel's `available` boolean (quantity is unreliable) → 0/1; `instore→IN_STORE`, `pickup→CLICK_AND_COLLECT`, any delivery method → `HOME_DELIVERY`. |
+| **Transport** | [BigWHttpTransport.cpp](src/BigWHttpTransport.cpp) | Same Akamai cookie-replay + browser-harvest pattern as Kmart, pointed at `bigw.com.au` (a second `CdpClient` with `cookie_domain = "bigw.com.au"`); adds a raw GET path via `HttpClient::getRaw`. |
+
+**Field mapping** (search → `products`): `product_id = identifiers.articleId`,
+`name = information.name`, `brand = information.brand.name`, `price = prices.<STATE>.price.cents/100`,
+and `fulfilment_channel` 2/3/5 from the pickup/delivery flags (same enum and Discord routing as
+Kmart). Alerts share the existing webhooks and name the retailer.
+
+**Re-arm semantics:** the search filters `inStock:true`, so discovery only surfaces in-stock items.
+To still catch the *out-of-stock → back-in-stock* cycle the user expects, the BigW inventory loop
+polls **all** tracked products (`getTrackedKeycodes`, not just OOS ones): when a product goes
+unavailable the loop records `available = 0` (no alert), so the next `0 → 1` transition fires a
+fresh alert — exactly the shared engine's `available > previous` rule with values in `{0, 1}`.
+
+**To verify against live data:** the example search `articleId` (7 digits) and the example sitemap
+`/p/<id>` (10 digits) differ, so the resolver logs its URL-resolution hit-rate. Confirm the
+`/p/<id>` ↔ `articleId` match holds (or adjust the matching field) before relying on resolved URLs;
+an unresolved URL is non-fatal (the alert still fires, just without a link).

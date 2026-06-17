@@ -6,9 +6,19 @@
 
 namespace restocker {
 
-// A product discovered via the Constructor.io search API.
+// Which retailer a product / stock reading / alert belongs to. Stored as the
+// integer value in the DB `distributor` column. Identity of a product is the
+// (distributor, product_id) pair — ids are not unique across retailers.
+enum class Distributor {
+    Kmart = 1,
+    BigW = 2,
+};
+
+// A product discovered via a retailer's catalogue API (Kmart Constructor.io
+// browse, or the BigW search endpoint).
 struct Product {
-    std::string variation_id;        // numeric keycode as text, e.g. "43519781"
+    std::string product_id;          // retailer product id as text, e.g. Kmart keycode "43519781" / BigW articleId "6073200"
+    int distributor = 1;             // see Distributor enum (1=Kmart, 2=BigW)
     std::string name;                // display "value"
     std::string url;                 // e.g. "/product/pokemon-trading-card-game:-..."
     std::string brand;
@@ -24,12 +34,14 @@ struct Product {
     int fulfilment_channel = 0;
 };
 
-// One stock reading for a (keycode, channel, location) tuple from the GraphQL gateway.
+// One stock reading for a (distributor, keycode, channel, location) tuple from a
+// retailer's availability API.
 struct ChannelStock {
     std::string keycode;
+    int distributor = 1;       // see Distributor enum (1=Kmart, 2=BigW)
     std::string channel;       // "HOME_DELIVERY" | "CLICK_AND_COLLECT" | "IN_STORE"
     std::string location_id;   // "" for national HOME_DELIVERY / CnC total
-    int available = 0;
+    int available = 0;         // numeric units (Kmart) or 0/1 availability (BigW)
 };
 
 // Per-store availability for the consolidated alert. The qualitative level + name
@@ -47,6 +59,7 @@ struct StoreStock {
 // Carries one consolidated, enriched payload per restocked product.
 struct RestockEvent {
     std::string keycode;
+    int distributor = 1;       // see Distributor enum (1=Kmart, 2=BigW)
     std::string name;          // product display name (may be empty if unknown)
     std::string url;           // absolute Kmart URL
     std::string image_url;     // product image URL (may be empty)

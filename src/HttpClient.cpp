@@ -121,6 +121,16 @@ HttpResponse HttpClient::postJsonRaw(const std::string& url, const std::string& 
     return perform(url, /*post=*/true, /*head=*/false, body, merged, opts);
 }
 
+HttpResponse HttpClient::getRaw(const std::string& url,
+                                const std::map<std::string, std::string>& headers,
+                                const std::string& user_agent) {
+    SendOpts opts;
+    opts.include_base_headers = false;  // send ONLY the caller's headers
+    opts.impersonate = false;           // plain curl TLS (matches the captured request)
+    opts.user_agent = user_agent;
+    return perform(url, /*post=*/false, /*head=*/false, /*body=*/"", headers, opts);
+}
+
 HttpResponse HttpClient::perform(const std::string& url, bool post, bool head,
                                  const std::string& body,
                                  const std::map<std::string, std::string>& extra_headers,

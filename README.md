@@ -1,8 +1,10 @@
 # RestockerApp
 
-A standalone C++ service that detects when Kmart AU **Pokémon Trading Card Game** products go live and when out-of-stock items are restocked, then fires notification webhooks (Discord and/or a generic HTTP POST).
+A standalone C++ service that detects when **Pokémon Trading Card Game** products go live and when out-of-stock items are restocked at Australian retailers — currently **Kmart** and **BigW** — then fires notification webhooks (Discord and/or a generic HTTP POST).
 
-It runs a **two-tier loop**:
+Each retailer runs its own discovery + inventory loops on their own threads, sharing one SQLite database, the notifier set, and the restock-decision engine. Products are keyed by `(distributor, product_id)` (`distributor`: 1 = Kmart, 2 = BigW), so the two catalogues coexist in the same tables. Alerts carry the retailer name. The **Kmart** pipeline is described below; the **BigW** pipeline ([BigW section](#bigw)) mirrors it with retailer-specific clients.
+
+The Kmart pipeline runs a **two-tier loop**:
 
 1. **Discovery loop** (fast, ~30s) — sweeps the Kmart **product sitemap**
    (`sitemap-index.xml` → the `product-sitemap-*.xml` files), keeps URLs containing
@@ -29,6 +31,33 @@ It runs a **two-tier loop**:
    call. **Stores with no stock are omitted.** Notifications respect `FulfilmentChannel`:
    channels 3/5 (and unknown) alert on the online restock signal; channel 2 (in-store only)
    alerts only when a nearby store actually holds stock.
+
+## BigW
+
+Enabled by the `bigw` config block (`"enabled": true`). It mirrors the Kmart two-tier design with
+BigW-specific clients:
+
+1. **Discovery loop** — paginates the BigW **search API**
+   (`POST api.bigw.com.au/search/v1/search`, `text: "pokemon tcg"`), keeping only results whose
+   `information.specifications` carry the configured `EssentialSafety: "For ages 6+"` entry (the
+   genuine-TCG gate). Each result maps to a product (`product_id = identifiers.articleId`, name,
+   brand, `prices.<STATE>.price.cents/100`, pre-order, and a `fulfilment_channel` of 2/3/5 from the
+   pickup/delivery flags). The search has no product URL, so it is resolved from the BigW
+   **sitemaps** (`sitemap.xml` → `product-en-aud-*.xml`), indexed by the trailing `/p/<id>` and
+   HEAD-diff cached.
+2. **Inventory loop** — polls availability **one product at a time**
+   (`GET api.bigw.com.au/api/availability/v0/product/{id}?storeId=…`). It relies on the per-channel
+   `available` **boolean** (BigW's quantity is unreliable), mapping `instore → IN_STORE`,
+   `pickup → CLICK_AND_COLLECT`, and any delivery method → `HOME_DELIVERY`, stored as 0/1. A product
+   becoming available in any channel fires an alert; if every channel goes unavailable and one later
+   returns, it alerts again. Store names for the alert come from the cached
+   `GET api.bigw.com.au/api/stores/v0/list`. Because the search only returns in-stock items, the
+   loop polls **all** tracked BigW products so it can observe them going out of stock.
+
+Both the availability and stores endpoints sit behind Akamai, so BigW uses the same cookie-replay +
+browser-harvest transport pattern as Kmart, pointed at `bigw.com.au`.
+
+The `--distributor <all|kmart|bigw>` flag restricts a run to one retailer.
 
 ## Build (CMake + vcpkg)
 
@@ -79,10 +108,16 @@ Key fields:
 - `kmart.instore_max` — max nearby stores listed in an alert (default `8`); also caps how many
   nearby stores the availability query requests.
 - `notifiers.discord` / `notifiers.generic` — enable and set URLs (see
-  [Set up Discord alerts](#set-up-discord-alerts-private-channel) below).
+  [Set up Discord alerts](#set-up-discord-alerts-private-channel) below). BigW shares these
+  webhooks and the same fulfilment-channel routing; the alert names the retailer.
 - `intervals.*` — `sitemap_seconds` (fast discovery poll, default 30), `browse_refresh_seconds`
   (full browse-group status refresh, default 300), `inventory_seconds` (inventory idle cadence,
   default 300; usually preempted by the discovery wake), plus per-loop jitter.
+- `bigw` — the BigW pipeline (see [BigW](#bigw)). `enabled` (default `false`); `store_id` (`0284`),
+  `state` (`QLD`), `zone`, `delivery_postcode`/`delivery_suburb` for the availability lookup;
+  `required_spec_name`/`required_spec_value` (the `EssentialSafety` / `For ages 6+` gate);
+  `search_seconds`/`availability_seconds`/`stores_refresh_seconds`/`per_product_delay_ms` cadence;
+  and `cookie`/`user_agent`/`transport` for the Akamai-fronted endpoints.
 
 ## Set up Discord alerts (private channel)
 
@@ -130,7 +165,7 @@ can see:
    ```sh
    sqlite3 restocker.db "SELECT count(*) FROM products;"               # all sitemap TCG products
    sqlite3 restocker.db "SELECT count(*) FROM products WHERE brand IS NOT NULL;"  # browse-enriched
-   sqlite3 restocker.db "SELECT variation_id,name,is_preorder,fulfilment_channel,tracked FROM products LIMIT 10;"
+   sqlite3 restocker.db "SELECT distributor,product_id,name,is_preorder,fulfilment_channel,tracked FROM products LIMIT 10;"
    ```
    Sitemap-only products (not in the browse group) keep a URL-derived name and defaults
    (`tracked=1`); browse-enriched rows get the clean Constructor name + pre-order/fulfilment/region.
@@ -148,10 +183,12 @@ can see:
 
 ## Schema
 
-- `products(variation_id PK, name, url, brand, image_url, price, is_preorder, preorder_release_date, tracked, fulfilment_channel, first_seen, last_seen)` — `tracked=0` when the product is out of stock in `kmart.target_state`; `fulfilment_channel` is the Kmart FulfilmentChannel (0 = unknown).
-- `inventory_state(keycode, channel, location_id, available, updated_at)` — PK `(keycode, channel, location_id)`; `location_id=''` for national Home Delivery / CnC total.
-- `alerts(id, keycode, channel, location_id, prev_available, new_available, fired_at)`
-- `app_meta(k, v)` — persistent anon Constructor session id + sequence counter.
+- `products(product_id, distributor, name, url, brand, image_url, price, is_preorder, preorder_release_date, tracked, fulfilment_channel, first_seen, last_seen)` — PK `(distributor, product_id)`; `distributor` 1 = Kmart, 2 = BigW; `tracked=0` when out of stock in `kmart.target_state`; `fulfilment_channel` 2/3/5 (0 = unknown).
+- `inventory_state(distributor, keycode, channel, location_id, available, updated_at)` — PK `(distributor, keycode, channel, location_id)`; `location_id=''` for national Home Delivery / CnC total.
+- `alerts(id, distributor, keycode, channel, location_id, prev_available, new_available, fired_at)`
+- `app_meta(k, v)` — `schema_version`, persistent anon Constructor session id + sequence counter, and per-retailer harvested cookie/UA.
+
+See [Database.md](Database.md) for the full schema, the multi-distributor migration, and the access map.
 
 ## Notes
 

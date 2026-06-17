@@ -17,7 +17,8 @@ std::vector<std::string> extractLocUrls(const std::string& xml_content);
 
 // Extract the trailing-digit keycode from a Kmart product URL: the run of digits
 // at the very end of the path, ignoring any trailing '/'. Returns "" when the URL
-// does not end in digits. This keycode equals Constructor's `variation_id`.
+// does not end in digits. This keycode equals Constructor's `variation_id`
+// (stored as the product's `product_id`).
 std::string extractKeycodeFromUrl(const std::string& url);
 
 // Derive a human-readable product name from the URL slug: the path segment after

@@ -79,8 +79,11 @@ std::vector<Product> parseConstructorResults(const std::string& body,
         if (!startsWith(url, url_prefix)) continue;  // strict prefix filter
 
         Product p;
-        p.variation_id = strField(d, "variation_id");
-        if (p.variation_id.empty()) continue;  // need a keycode to be useful
+        p.distributor = static_cast<int>(Distributor::Kmart);
+        // Constructor's JSON field is "variation_id" (Kmart's API) — unrelated to
+        // our renamed `product_id` column.
+        p.product_id = strField(d, "variation_id");
+        if (p.product_id.empty()) continue;  // need a keycode to be useful
         p.name = strField(r, "value");
         p.url = url;
         p.brand = strField(d, "Brand");

@@ -74,12 +74,47 @@ Config Config::loadFromFile(const std::string& path) {
         getIf(s, "extra_headers", d.extra_headers);
     }
 
+    if (j.contains("bigw")) {
+        const auto& s = j["bigw"];
+        auto& d = c.bigw;
+        getIf(s, "enabled", d.enabled);
+        getIf(s, "search_url", d.search_url);
+        getIf(s, "availability_url", d.availability_url);
+        getIf(s, "stores_url", d.stores_url);
+        getIf(s, "sitemap_index_url", d.sitemap_index_url);
+        getIf(s, "product_sitemap_filter", d.product_sitemap_filter);
+        getIf(s, "search_text", d.search_text);
+        getIf(s, "store_id", d.store_id);
+        getIf(s, "state", d.state);
+        getIf(s, "zone", d.zone);
+        getIf(s, "per_page", d.per_page);
+        getIf(s, "max_pages", d.max_pages);
+        getIf(s, "client_id", d.client_id);
+        getIf(s, "delivery_postcode", d.delivery_postcode);
+        getIf(s, "delivery_suburb", d.delivery_suburb);
+        getIf(s, "required_spec_name", d.required_spec_name);
+        getIf(s, "required_spec_value", d.required_spec_value);
+        getIf(s, "user_agent", d.user_agent);
+        getIf(s, "cookie", d.cookie);
+        getIf(s, "transport", d.transport);
+        getIf(s, "harvest_after_failures", d.harvest_after_failures);
+        getIf(s, "extra_headers", d.extra_headers);
+        getIf(s, "search_seconds", d.search_seconds);
+        getIf(s, "search_jitter_seconds", d.search_jitter_seconds);
+        getIf(s, "availability_seconds", d.availability_seconds);
+        getIf(s, "availability_jitter_seconds", d.availability_jitter_seconds);
+        getIf(s, "stores_refresh_seconds", d.stores_refresh_seconds);
+        getIf(s, "per_product_delay_ms", d.per_product_delay_ms);
+        getIf(s, "instore_max", d.instore_max);
+    }
+
     if (j.contains("browser")) {
         const auto& s = j["browser"];
         auto& d = c.browser;
         getIf(s, "executable_path", d.executable_path);
         getIf(s, "headless", d.headless);
         getIf(s, "nav_url", d.nav_url);
+        getIf(s, "cookie_domain", d.cookie_domain);
         getIf(s, "page_settle_ms", d.page_settle_ms);
         getIf(s, "relaunch_every_cycles", d.relaunch_every_cycles);
         getIf(s, "cdp_timeout_ms", d.cdp_timeout_ms);
@@ -161,6 +196,20 @@ Config Config::loadFromFile(const std::string& path) {
     }
     if (c.kmart.transport != "browser" && c.kmart.transport != "http") {
         throw std::runtime_error("kmart.transport must be \"browser\" or \"http\"");
+    }
+    if (c.bigw.enabled) {
+        if (c.bigw.transport != "browser" && c.bigw.transport != "http") {
+            throw std::runtime_error("bigw.transport must be \"browser\" or \"http\"");
+        }
+        if (c.bigw.store_id.empty()) {
+            throw std::runtime_error("bigw.store_id must not be empty");
+        }
+        if (c.bigw.per_page < 1) {
+            throw std::runtime_error("bigw.per_page must be >= 1");
+        }
+        if (c.bigw.search_seconds < 1 || c.bigw.availability_seconds < 1) {
+            throw std::runtime_error("bigw interval seconds must be >= 1");
+        }
     }
 
     return c;

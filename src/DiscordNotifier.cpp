@@ -11,9 +11,26 @@ using json = nlohmann::json;
 namespace restocker {
 namespace {
 
-std::string absoluteUrl(const std::string& url) {
+// Human-readable retailer name for the distributor enum value.
+std::string distributorName(int distributor) {
+    switch (distributor) {
+        case static_cast<int>(Distributor::Kmart): return "Kmart";
+        case static_cast<int>(Distributor::BigW): return "BigW";
+        default: return "Restocker";
+    }
+}
+
+// Base host used to absolutise a relative product URL, per distributor.
+std::string baseHost(int distributor) {
+    switch (distributor) {
+        case static_cast<int>(Distributor::BigW): return "https://www.bigw.com.au";
+        default: return "https://www.kmart.com.au";
+    }
+}
+
+std::string absoluteUrl(const std::string& url, int distributor) {
     if (url.rfind("http", 0) == 0) return url;
-    if (!url.empty() && url.front() == '/') return "https://www.kmart.com.au" + url;
+    if (!url.empty() && url.front() == '/') return baseHost(distributor) + url;
     return url;
 }
 
@@ -73,8 +90,9 @@ const std::string& DiscordNotifier::webhookFor(const RestockEvent& event) const 
 }
 
 std::string DiscordNotifier::buildBody(const RestockEvent& event) {
+    std::string retailer = distributorName(event.distributor);
     std::string title = event.name.empty() ? ("Keycode " + event.keycode) : event.name;
-    std::string url = absoluteUrl(event.url);
+    std::string url = absoluteUrl(event.url, event.distributor);
 
     // Header line: pre-order banner with the release date, or a restock banner.
     std::string description;
@@ -117,13 +135,14 @@ std::string DiscordNotifier::buildBody(const RestockEvent& event) {
     }
 
     fields.push_back({{"name", "🔑 Keycode"}, {"value", event.keycode}, {"inline", true}});
+    fields.push_back({{"name", "🏪 Retailer"}, {"value", retailer}, {"inline", true}});
 
     json embed = {
         {"title", title},
         {"description", description},
         {"color", color},
         {"fields", fields},
-        {"footer", {{"text", "Kmart Restocker"}}},
+        {"footer", {{"text", retailer + " Restocker"}}},
     };
     if (!url.empty()) embed["url"] = url;
     if (!event.image_url.empty()) embed["image"] = {{"url", event.image_url}};
@@ -131,7 +150,7 @@ std::string DiscordNotifier::buildBody(const RestockEvent& event) {
     if (!ts.empty()) embed["timestamp"] = ts;
 
     json body = {
-        {"username", "Kmart Restocker"},
+        {"username", retailer + " Restocker"},
         {"content", event.is_preorder ? "🔜 Pre-order live!" : "🎉 Restock detected!"},
         {"embeds", json::array({embed})},
     };

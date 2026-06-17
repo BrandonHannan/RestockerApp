@@ -22,11 +22,6 @@ public:
     void run();
 
 private:
-    // Process all freshly fetched rows for one product: persist every row, and
-    // if any channel/location increased, build one consolidated, enriched alert
-    // and fire it. Returns true if an alert fired.
-    bool processProduct(const std::string& keycode, const std::vector<ChannelStock>& rows);
-
     const Config& cfg_;
     KmartGraphQLClient& client_;
     Database& db_;

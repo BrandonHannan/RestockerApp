@@ -78,9 +78,52 @@ struct BrowserConfig {
     // (e.g. xvfb-run). Set true only if a future stealth setup evades detection.
     bool headless = false;
     std::string nav_url = "https://www.kmart.com.au/";  // origin to navigate before fetching
+    // Substring a harvested cookie's domain must contain to be kept. Lets the same
+    // CdpClient harvest for different origins (e.g. "bigw.com.au" for BigW).
+    std::string cookie_domain = "kmart.com.au";
     int page_settle_ms = 4000;     // wait after load for Akamai sensor to validate cookies
     int relaunch_every_cycles = 0; // 0 = never proactively relaunch (only on error)
     int cdp_timeout_ms = 30000;    // per CDP command timeout
+};
+
+struct BigWConfig {
+    bool enabled = false;  // gate the whole BigW pipeline
+    // Endpoints.
+    std::string search_url = "https://api.bigw.com.au/search/v1/search";
+    std::string availability_url = "https://api.bigw.com.au/api/availability/v0/product/";  // + {id}?...
+    std::string stores_url = "https://api.bigw.com.au/api/stores/v0/list";
+    std::string sitemap_index_url = "https://www.bigw.com.au/sitemap.xml";
+    std::string product_sitemap_filter = "product-en-aud";  // matches product-en-aud-N.xml
+    // Search request params.
+    std::string search_text = "pokemon tcg";
+    std::string store_id = "0284";
+    std::string state = "QLD";
+    std::string zone = "DDBURLEIGHHEADS";
+    int per_page = 48;
+    int max_pages = 10;
+    std::string client_id = "mobile";
+    // Availability request params.
+    std::string delivery_postcode = "4221";
+    std::string delivery_suburb = "ELANORA";
+    // Discovery filter: keep only results carrying this specification entry.
+    std::string required_spec_name = "EssentialSafety";
+    std::string required_spec_value = "For ages 6+";
+    // Akamai transport (mirrors KmartConfig). Availability/stores GETs replay the
+    // captured _abck cookie jar; refreshed by a browser re-harvest on failure.
+    std::string user_agent = "BigwApp/4.45.4 (ios - 26.5)";
+    std::string cookie;
+    std::string transport = "http";  // "http" | "browser"
+    int harvest_after_failures = 3;
+    std::map<std::string, std::string> extra_headers;
+    // Cadence. BigW polls availability one product at a time, so it gets its own
+    // (slower) intervals and a per-product throttle.
+    int search_seconds = 120;
+    int search_jitter_seconds = 15;
+    int availability_seconds = 300;
+    int availability_jitter_seconds = 30;
+    int stores_refresh_seconds = 86400;  // store list changes rarely
+    int per_product_delay_ms = 400;      // throttle the one-by-one availability GETs
+    int instore_max = 8;
 };
 
 struct IntervalsConfig {
@@ -135,6 +178,7 @@ struct DatabaseConfig {
 struct Config {
     ConstructorConfig constructor;
     KmartConfig kmart;
+    BigWConfig bigw;
     BrowserConfig browser;
     IntervalsConfig intervals;
     NotifiersConfig notifiers;

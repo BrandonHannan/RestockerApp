@@ -35,6 +35,14 @@ add_executable(RestockerApp
   src/NotifierManager.cpp
   src/DiscoveryLoop.cpp
   src/InventoryLoop.cpp
+  src/RestockEngine.cpp
+  src/BigWHttpTransport.cpp
+  src/BigWSearchClient.cpp
+  src/BigWSitemapResolver.cpp
+  src/BigWAvailabilityClient.cpp
+  src/BigWStoresClient.cpp
+  src/BigWDiscoveryLoop.cpp
+  src/BigWInventoryLoop.cpp
 )
 
 target_include_directories(RestockerApp PRIVATE src)

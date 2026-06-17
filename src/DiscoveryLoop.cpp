@@ -53,7 +53,7 @@ std::unordered_map<std::string, Product> DiscoveryLoop::sweepBrowseStatus() {
 
         const size_t got = res.products.size();
         for (auto& p : res.products) {
-            std::string kc = p.variation_id;
+            std::string kc = p.product_id;
             map.emplace(std::move(kc), std::move(p));
         }
         spdlog::debug("browse page {}: {} products, total_results={}, ratelimit_remaining={}",
@@ -86,7 +86,8 @@ int DiscoveryLoop::runOnce() {
             const std::string& keycode = kv.first;
             const std::string& url = kv.second;
             if (db_.insertProductIfAbsent(
-                    keycode, url, productNameFromUrl(url, cfg_.constructor.url_prefix_filter))) {
+                    static_cast<int>(Distributor::Kmart), keycode, url,
+                    productNameFromUrl(url, cfg_.constructor.url_prefix_filter))) {
                 newKeycodes.insert(keycode);
                 ++newly;
             }

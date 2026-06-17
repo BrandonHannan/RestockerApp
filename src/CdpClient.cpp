@@ -513,9 +513,10 @@ CdpClient::HarvestedCookies CdpClient::harvestCookies() {
         return out;
     }
 
+    const std::string& cookie_domain = impl_->cfg.cookie_domain;
     for (const auto& c : resp["result"]["cookies"]) {
         std::string domain = c.value("domain", std::string());
-        if (domain.find("kmart.com.au") == std::string::npos) continue;
+        if (domain.find(cookie_domain) == std::string::npos) continue;
         std::string name = c.value("name", std::string());
         if (name.empty()) continue;
         if (!out.cookie.empty()) out.cookie += "; ";
@@ -533,10 +534,10 @@ CdpClient::HarvestedCookies CdpClient::harvestCookies() {
     }
 
     if (out.cookie.empty()) {
-        spdlog::warn("CdpClient: harvested no kmart.com.au cookies");
+        spdlog::warn("CdpClient: harvested no {} cookies", cookie_domain);
     } else {
-        spdlog::info("CdpClient: harvested {} bytes of kmart.com.au cookies (ua='{}')",
-                     out.cookie.size(), out.user_agent);
+        spdlog::info("CdpClient: harvested {} bytes of {} cookies (ua='{}')",
+                     out.cookie.size(), cookie_domain, out.user_agent);
     }
     return out;
 }
