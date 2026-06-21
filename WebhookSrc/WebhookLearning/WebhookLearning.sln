@@ -1,0 +1,44 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36414.22
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Webhook.API", "Webhook.API.csproj", "{46F4438B-E7E0-40C4-888B-D0B22F1B8648}"
+	ProjectSection(ProjectDependencies) = postProject
+		{2C8394D8-710D-415E-B947-1FA9D1537A0D} = {2C8394D8-710D-415E-B947-1FA9D1537A0D}
+		{8D8E4B4A-33D2-4BEA-81B5-A4E0C6D7BC3F} = {8D8E4B4A-33D2-4BEA-81B5-A4E0C6D7BC3F}
+	EndProjectSection
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Webhook.Data", "..\Webhook.Data\Webhook.Data.csproj", "{8D8E4B4A-33D2-4BEA-81B5-A4E0C6D7BC3F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Webhook.Services", "..\Webhook.Services\Webhook.Services.csproj", "{2C8394D8-710D-415E-B947-1FA9D1537A0D}"
+	ProjectSection(ProjectDependencies) = postProject
+		{8D8E4B4A-33D2-4BEA-81B5-A4E0C6D7BC3F} = {8D8E4B4A-33D2-4BEA-81B5-A4E0C6D7BC3F}
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{46F4438B-E7E0-40C4-888B-D0B22F1B8648}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{46F4438B-E7E0-40C4-888B-D0B22F1B8648}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{46F4438B-E7E0-40C4-888B-D0B22F1B8648}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{46F4438B-E7E0-40C4-888B-D0B22F1B8648}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8D8E4B4A-33D2-4BEA-81B5-A4E0C6D7BC3F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8D8E4B4A-33D2-4BEA-81B5-A4E0C6D7BC3F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8D8E4B4A-33D2-4BEA-81B5-A4E0C6D7BC3F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8D8E4B4A-33D2-4BEA-81B5-A4E0C6D7BC3F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2C8394D8-710D-415E-B947-1FA9D1537A0D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2C8394D8-710D-415E-B947-1FA9D1537A0D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2C8394D8-710D-415E-B947-1FA9D1537A0D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2C8394D8-710D-415E-B947-1FA9D1537A0D}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {F0482D12-227A-4EDF-884C-B71BD4423B3A}
+	EndGlobalSection
+EndGlobal

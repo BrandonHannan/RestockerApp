@@ -6,6 +6,17 @@
             "driver": "SQLite",
             "name": "Restocker",
             "database": "${workspaceFolder:RestockerApp}/restocker.db"
+        },
+        {
+            "ssh": "Disabled",
+            "previewLimit": 50,
+            "server": "localhost",
+            "port": 5432,
+            "driver": "PostgreSQL",
+            "name": "WebhookDEVDB",
+            "database": "WebhookDb",
+            "username": "postgres",
+            "password": "postgres"
         }
     ]
 }

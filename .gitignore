@@ -4,5 +4,11 @@ config.json
 *.db-wal
 *.db-shm
 *.log
+*appsettings.*
+*bin
+*obj
+*FileContentIndex
+*v17
+*dockerignore
 probe.json
 vcpkg_installed/
