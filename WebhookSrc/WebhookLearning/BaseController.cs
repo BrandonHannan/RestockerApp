@@ -1,10 +1,12 @@
-﻿using Microsoft.AspNetCore.Hosting.Server;
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 using WebhookLearning.Controllers;
 
 namespace Webhook.API
 {
+    [Authorize]
     [ApiController]
     [Route("api/v1/[controller]")]
     public abstract class BaseController : ControllerBase
