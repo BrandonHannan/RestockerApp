@@ -5,8 +5,15 @@ using Microsoft.OpenApi.Models;
 using System.Text;
 using Webhook.API.AuthHelper;
 using Webhook.Data;
+using Webhook.Services.AlertService;
+using Webhook.Services.DistributorService;
+using Webhook.Services.FufilmentChannelService;
+using Webhook.Services.LocationService;
+using Webhook.Services.ProductService;
+using Webhook.Services.StockService;
+using Webhook.Services.StockTypeService;
 using Webhook.Services.UserServices;
-using Webhook.Services.WebhookServices;
+using Webhook.Services.WebhookConnectionService;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -77,8 +84,15 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddDbContext<WebhookDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Database")));
 
-builder.Services.AddScoped<UserService>();
-builder.Services.AddScoped<WebhookSubscriptionService>();
+builder.Services.AddScoped<IUserService, UserService>();
+builder.Services.AddScoped<IDistributorService, DistributorService>();
+builder.Services.AddScoped<IProductService, ProductService>();
+builder.Services.AddScoped<IStockTypeService, StockTypeService>();
+builder.Services.AddScoped<IStockService, StockService>();
+builder.Services.AddScoped<IWebhookConnectionService, WebhookConnectionService>();
+builder.Services.AddScoped<IAlertService, AlertService>();
+builder.Services.AddScoped<IFufilmentChannelService, FufilmentChannelService>();
+builder.Services.AddScoped<ILocationService, LocationService>();
 
 
 var app = builder.Build();

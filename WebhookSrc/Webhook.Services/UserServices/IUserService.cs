@@ -12,5 +12,9 @@ namespace Webhook.Services.UserServices
         public Task<User> GetUserByIdAsync(Guid userId);
 
         public string GenerateJwtToken(User user);
+
+        public Task CreateUser(User user);
+
+        public bool IsValidEmail(string email);
     }
 }

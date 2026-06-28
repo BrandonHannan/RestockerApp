@@ -2,16 +2,20 @@
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
-using WebhookLearning.Controllers;
 
-namespace Webhook.API
+namespace Webhook.API.Controllers
 {
     [Authorize]
     [ApiController]
-    [Route("api/v1/[controller]")]
+    [Route("api/[controller]")]
     public abstract class BaseController : ControllerBase
     {
-        protected readonly ILogger<BaseController> _logger;
+        protected readonly ILogger _logger;
+
+        protected BaseController(ILogger logger)
+        {
+            _logger = logger;
+        }
 
         protected string CurrentUserId
         {

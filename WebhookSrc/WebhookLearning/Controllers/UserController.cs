@@ -1,14 +1,17 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
+using Webhook.API.Filtering;
 using Webhook.API.Models;
 using Webhook.Data;
+using Webhook.Data.Models;
 using Webhook.Services.UserServices;
 
 namespace Webhook.API.Controllers
 {
     [ApiController]
-    [Route("login")]
+    [Route("api/[controller]")]
+    [AllowedIP("192.168.1.100", "127.0.0.1")]
     public class UserController : ControllerBase
     {
 
@@ -50,10 +53,10 @@ namespace Webhook.API.Controllers
             }
         }
 
-        [HttpPost]
+        [HttpPost("login")]
         public async Task<IActionResult> Login([FromBody] LoginRequest request)
         {
-            var user = await _context.User.FirstOrDefaultAsync(u => u.Email == request.Email && !u.IsDeleted);
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == request.Email && !u.IsDeleted);
 
             if (user == null)
             {
@@ -71,6 +74,26 @@ namespace Webhook.API.Controllers
             var token = _userService.GenerateJwtToken(user);
 
             return Ok(new { Token = token });
+        }
+
+        [HttpPost("signup")]
+        public async Task<IActionResult> SignUp([FromBody] SignUpRequest request)
+        {
+            if (!_userService.IsValidEmail(request.Email)){
+                return BadRequest("Invalid email provided");
+            }
+
+            var user = new User
+            {
+                UserId = Guid.NewGuid(),
+                Email = request.Email,
+                Username = request.Username,
+                Password = request.Password
+            };
+
+            await _userService.CreateUser(user);
+
+            return Ok();
         }
     }
 }
