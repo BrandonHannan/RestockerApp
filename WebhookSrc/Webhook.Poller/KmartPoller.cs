@@ -15,18 +15,22 @@ namespace Webhook.Poller
 {
     public class KmartPoller : IWebhookPollerHandler
     {
+        private static DateTime _lastForcedPollTime = DateTime.MinValue;
+
         private readonly ILogger<KmartPoller> _logger;
         private readonly WebhookDbContext _dbContext;
         private readonly IHttpClientFactory _httpClientFactory;
+        private readonly IConfiguration _configuration;
         private readonly IProductService _productService;
         public string StoreName => "Kmart";
         public bool PollProductsPage { get; set; }
 
-        public KmartPoller(WebhookDbContext dbContext, IProductService productService, IHttpClientFactory httpClientFactory, ILogger<KmartPoller> logger)
+        public KmartPoller(WebhookDbContext dbContext, IProductService productService, IHttpClientFactory httpClientFactory, IConfiguration configuration, ILogger<KmartPoller> logger)
         {
             _dbContext = dbContext;
             _httpClientFactory = httpClientFactory;
             _productService = productService;
+            _configuration = configuration;
             _logger = logger;
         }
 
@@ -43,9 +47,16 @@ namespace Webhook.Poller
 
             await PollSiteMapAsync(distributor, cancellationToken);
 
-            if (PollProductsPage)
+            // Pull the override interval from appsettings, defaulting to 30 seconds if missing
+            int forceIntervalSeconds = _configuration.GetValue<int>("WebhookSettings:ForcePollProductsIntervalSeconds", 30);
+
+            // Check if enough time has passed since the last poll
+            bool timeToForcePoll = (DateTime.UtcNow - _lastForcedPollTime).TotalSeconds >= forceIntervalSeconds;
+
+            if (PollProductsPage || timeToForcePoll)
             {
                 await PollProductsAsync(distributor, cancellationToken);
+                _lastForcedPollTime = DateTime.UtcNow;
             }
 
             await PollProductAvailabilityAsync(cancellationToken);
@@ -255,7 +266,7 @@ namespace Webhook.Poller
                             }
                             catch
                             {
-                                _logger.LogError(ex, "Failed to process product {ProductID}", result?.data?.variation_id);
+                                _logger.LogError("Failed to process product {ProductID}", result?.data?.variation_id);
                             }
                         }
                     }
