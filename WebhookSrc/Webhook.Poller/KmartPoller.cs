@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Playwright;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -9,6 +10,7 @@ using System.Xml.Serialization;
 using Webhook.Data;
 using Webhook.Data.Models;
 using Webhook.Poller.ResponseModels.Kmart;
+using Webhook.Services;
 using Webhook.Services.ProductService;
 
 namespace Webhook.Poller
@@ -20,18 +22,26 @@ namespace Webhook.Poller
         private readonly ILogger<KmartPoller> _logger;
         private readonly WebhookDbContext _dbContext;
         private readonly IHttpClientFactory _httpClientFactory;
+        private readonly PlaywrightBrowserService _browserService;
         private readonly IConfiguration _configuration;
         private readonly IProductService _productService;
         public string StoreName => "Kmart";
         public bool PollProductsPage { get; set; }
 
-        public KmartPoller(WebhookDbContext dbContext, IProductService productService, IHttpClientFactory httpClientFactory, IConfiguration configuration, ILogger<KmartPoller> logger)
+        public KmartPoller(
+            WebhookDbContext dbContext, 
+            IProductService productService, 
+            IHttpClientFactory httpClientFactory, 
+            PlaywrightBrowserService browserService, 
+            IConfiguration configuration, 
+            ILogger<KmartPoller> logger)
         {
             _dbContext = dbContext;
             _httpClientFactory = httpClientFactory;
             _productService = productService;
             _configuration = configuration;
             _logger = logger;
+            _browserService = browserService;
         }
 
         public async Task PollAsync(CancellationToken cancellationToken)
@@ -280,7 +290,85 @@ namespace Webhook.Poller
 
         public async Task PollProductAvailabilityAsync(CancellationToken cancellationToken)
         {
-            //
+            // Use a raw string literal for the exact JSON payload from your curl
+            string payload = """
+                {"operationName":"getProductAvailability","variables":{"input":{"country":"AU","postcode":"2000","products":[{"keycode":"43788767","quantity":1,"isNationalInventory":false,"isClickAndCollectOnly":false}],"fulfilmentMethods":["HOME_DELIVERY","CLICK_AND_COLLECT"],"amendNearestInStockCnc":true,"limit":3}},"query":"query getProductAvailability($input: ProductAvailabilityQueryInput!) {\n  getProductAvailability(input: $input) {\n    postcode\n    country\n    region\n    availability {\n      HOME_DELIVERY {\n        keycode\n        poolName\n        stock {\n          available\n          __typename\n        }\n        __typename\n      }\n      CLICK_AND_COLLECT {\n        keycode\n        stock {\n          totalAvailable\n          __typename\n        }\n        locations {\n          fulfilment {\n            isBuddyLocation\n            locationId\n            stock {\n              available\n              __typename\n            }\n            __typename\n          }\n          location {\n            locationId\n            __typename\n          }\n          __typename\n        }\n        __typename\n      }\n      IN_STORE {\n        keycode\n        locations {\n          fulfilment {\n            stock {\n              available\n              __typename\n            }\n            __typename\n          }\n          location {\n            locationId\n            __typename\n          }\n          __typename\n        }\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n}\n"}
+                """;
+
+            // Prime + validate Akamai's _abck directly ON the product page where the real site makes
+            // this availability call, so the POST has the correct referer and page sensor context.
+            // The request must originate from this browser because Akamai binds _abck to the TLS/HTTP2
+            // fingerprint that generated it — replaying the cookies from HttpClient/APIRequest is rejected.
+            const string productUrl = "https://www.kmart.com.au/product/pokemon-trading-card-game:-mega-evolution-pitch-black-sleeved-booster-pack-assorted-43788767/";
+            var page = await _browserService.GetPrimedPageAsync(productUrl);
+            try
+            {
+                page.Request += async (_, r) =>
+                {
+                    if (r.Url.Contains("gateway/graphql"))
+                    {
+                        var h = await r.AllHeadersAsync();
+                        var cookie = h.TryGetValue("cookie", out var ck) ? ck : "<none>";
+                        Console.WriteLine($"[REQ] {r.Method} {r.Url}");
+                        Console.WriteLine($"[REQ-COOKIE] {cookie}");
+                        Console.WriteLine($"[REQ-SECFETCH] site={h.GetValueOrDefault("sec-fetch-site")} mode={h.GetValueOrDefault("sec-fetch-mode")} origin={h.GetValueOrDefault("origin")} ua={h.GetValueOrDefault("user-agent")}");
+                    }
+                };
+                page.RequestFailed += (_, r) =>
+                {
+                    if (r.Url.Contains("gateway/graphql"))
+                        Console.WriteLine($"[REQFAIL] {r.Method} {r.Url} :: {r.Failure}");
+                };
+                page.Response += (_, r) =>
+                {
+                    if (r.Url.Contains("gateway/graphql"))
+                        Console.WriteLine($"[NET] {r.Request.Method} {r.Url} -> {r.Status}");
+                };
+
+                // --disable-web-security lets JS read the cross-origin response but strips Origin and
+                // Referer. Restore them at the context level (matching the request the real site makes
+                // from this product page).
+                await page.SetExtraHTTPHeadersAsync(new Dictionary<string, string>
+                {
+                    ["origin"] = "https://www.kmart.com.au",
+                    ["referer"] = productUrl
+                });
+
+                var diag = await page.EvaluateAsync<JsonElement>(@"
+                    async (payload) => {
+                        try {
+                            const res = await fetch('https://api.kmart.com.au/gateway/graphql', {
+                                method: 'POST',
+                                headers: { 'accept': '*/*', 'content-type': 'application/json' },
+                                body: payload,
+                                credentials: 'include'
+                            });
+                            return { ok: true, status: res.status, body: await res.text() };
+                        } catch (e) {
+                            return { ok: false, error: String(e) };
+                        }
+                    }", payload);
+
+                Console.WriteLine($"[FETCH] {diag.GetRawText().Substring(0, Math.Min(200, diag.GetRawText().Length))}");
+
+                bool ok = diag.GetProperty("ok").GetBoolean();
+                if (ok && diag.GetProperty("status").GetInt32() == 200)
+                {
+                    _logger.LogInformation("Availability Data ({Status}): {Data}", 200, diag.GetProperty("body").GetString());
+                }
+                else if (ok)
+                {
+                    _logger.LogError("GraphQL Request Failed: {Status} {Text}", diag.GetProperty("status").GetInt32(), diag.GetProperty("body").GetString());
+                }
+                else
+                {
+                    _logger.LogError("GraphQL Request Failed: {Text}", diag.GetProperty("error").GetString());
+                }
+            }
+            finally
+            {
+                await page.CloseAsync();
+            }
         }
 
         public async Task PollLocationsAsync(CancellationToken cancellationToken)

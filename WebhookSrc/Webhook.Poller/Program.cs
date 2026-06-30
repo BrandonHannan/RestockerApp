@@ -1,4 +1,5 @@
 using Webhook.Poller;
+using Webhook.Services;
 using Webhook.Services.ProductService;
 
 var builder = Host.CreateDefaultBuilder(args);
@@ -11,6 +12,8 @@ builder.ConfigureServices((hostContext, services) =>
 
     services.AddTransient<IWebhookPollerHandler, KmartPoller>();
     services.AddTransient<KmartPoller>();
+
+    services.AddSingleton<PlaywrightBrowserService>();
 
     services.AddHostedService<WebhookPollerWorker>();
 });
