@@ -18,6 +18,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Expiring Akamai cookie set for the live Kmart availability call; git-ignored, refresh as needed. -->
+    <None Include="kmart.cookie.txt" Condition="Exists('kmart.cookie.txt')" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Webhook.Poller\Webhook.Poller.csproj" />
     <ProjectReference Include="..\Webhook.Services\Webhook.Services.csproj" />
     <ProjectReference Include="..\Webhook.Data\Webhook.Data.csproj" />

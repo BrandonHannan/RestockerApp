@@ -28,15 +28,30 @@ namespace Webhook.IntegrationTests
                 c.AddProvider(capturing);
             });
 
-            // Real browser service -> real headless Chromium + live Kmart API.
-            // This is what makes the test an integration test rather than a unit test.
+            // Injected by the constructor but not exercised by this method.
             services.AddSingleton<PlaywrightBrowserService>();
 
-            // The following deps are required by the constructor but are not used
-            // by PollProductAvailabilityAsync; they only need to be resolvable.
+            // PollProductAvailabilityAsync POSTs to the Akamai-protected Kmart API using a valid
+            // cookie set supplied via Kmart:AvailabilityCookie. These cookies expire within hours;
+            // provide a fresh set via the KMART_AVAILABILITY_COOKIE env var or the kmart.cookie.txt
+            // file (copied next to the test binary). See README / plan for how to refresh.
+            var cookie = Environment.GetEnvironmentVariable("KMART_AVAILABILITY_COOKIE");
+            if (string.IsNullOrWhiteSpace(cookie))
+            {
+                var cookieFile = Path.Combine(AppContext.BaseDirectory, "kmart.cookie.txt");
+                if (File.Exists(cookieFile))
+                {
+                    cookie = File.ReadAllText(cookieFile).Trim();
+                }
+            }
+
             services.AddHttpClient();                                   // IHttpClientFactory
-            services.AddSingleton<IConfiguration>(
-                new ConfigurationBuilder().Build());                    // empty IConfiguration
+            services.AddSingleton<IConfiguration>(new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Kmart:AvailabilityCookie"] = cookie
+                })
+                .Build());
             services.AddDbContext<WebhookDbContext>(o =>
                 o.UseInMemoryDatabase("KmartPollerTests"));             // no-op DbContext
             services.AddSingleton(Mock.Of<IProductService>());          // stub
@@ -46,8 +61,8 @@ namespace Webhook.IntegrationTests
 
             var poller = provider.GetRequiredService<KmartPoller>();
 
-            // Act: launches real headless Chromium, primes Akamai cookies on
-            // www.kmart.com.au, then POSTs the GraphQL query via an in-page fetch.
+            // Act: POSTs the getProductAvailability query to the live Akamai-protected Kmart API
+            // using the configured cookie set.
             await poller.PollProductAvailabilityAsync(CancellationToken.None);
 
             // Assert: the request returned HTTP 200 (logged as "Availability Data (200)")

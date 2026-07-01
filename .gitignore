@@ -12,3 +12,6 @@ config.json
 *dockerignore
 probe.json
 vcpkg_installed/
+
+# Expiring Akamai cookie set for Kmart integration test (do not commit)
+kmart.cookie.txt

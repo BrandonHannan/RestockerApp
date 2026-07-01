@@ -295,79 +295,51 @@ namespace Webhook.Poller
                 {"operationName":"getProductAvailability","variables":{"input":{"country":"AU","postcode":"2000","products":[{"keycode":"43788767","quantity":1,"isNationalInventory":false,"isClickAndCollectOnly":false}],"fulfilmentMethods":["HOME_DELIVERY","CLICK_AND_COLLECT"],"amendNearestInStockCnc":true,"limit":3}},"query":"query getProductAvailability($input: ProductAvailabilityQueryInput!) {\n  getProductAvailability(input: $input) {\n    postcode\n    country\n    region\n    availability {\n      HOME_DELIVERY {\n        keycode\n        poolName\n        stock {\n          available\n          __typename\n        }\n        __typename\n      }\n      CLICK_AND_COLLECT {\n        keycode\n        stock {\n          totalAvailable\n          __typename\n        }\n        locations {\n          fulfilment {\n            isBuddyLocation\n            locationId\n            stock {\n              available\n              __typename\n            }\n            __typename\n          }\n          location {\n            locationId\n            __typename\n          }\n          __typename\n        }\n        __typename\n      }\n      IN_STORE {\n        keycode\n        locations {\n          fulfilment {\n            stock {\n              available\n              __typename\n            }\n            __typename\n          }\n          location {\n            locationId\n            __typename\n          }\n          __typename\n        }\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n}\n"}
                 """;
 
-            // Prime + validate Akamai's _abck directly ON the product page where the real site makes
-            // this availability call, so the POST has the correct referer and page sensor context.
-            // The request must originate from this browser because Akamai binds _abck to the TLS/HTTP2
-            // fingerprint that generated it — replaying the cookies from HttpClient/APIRequest is rejected.
-            const string productUrl = "https://www.kmart.com.au/product/pokemon-trading-card-game:-mega-evolution-pitch-black-sleeved-booster-pack-assorted-43788767/";
-            var page = await _browserService.GetPrimedPageAsync(productUrl);
-            try
+            // api.kmart.com.au is behind Akamai Bot Manager, which gates on a valid Akamai cookie set
+            // (_abck / bm_* / ak_bmsc) plus browser-like headers — NOT on the client's TLS fingerprint
+            // (a plain HttpClient replay succeeds with the right cookies). The cookie set is harvested
+            // from a real browser session and supplied via configuration (it expires within hours, so
+            // it must be refreshed). See "Kmart:AvailabilityCookie".
+            var cookie = _configuration["Kmart:AvailabilityCookie"];
+            if (string.IsNullOrWhiteSpace(cookie))
             {
-                page.Request += async (_, r) =>
-                {
-                    if (r.Url.Contains("gateway/graphql"))
-                    {
-                        var h = await r.AllHeadersAsync();
-                        var cookie = h.TryGetValue("cookie", out var ck) ? ck : "<none>";
-                        Console.WriteLine($"[REQ] {r.Method} {r.Url}");
-                        Console.WriteLine($"[REQ-COOKIE] {cookie}");
-                        Console.WriteLine($"[REQ-SECFETCH] site={h.GetValueOrDefault("sec-fetch-site")} mode={h.GetValueOrDefault("sec-fetch-mode")} origin={h.GetValueOrDefault("origin")} ua={h.GetValueOrDefault("user-agent")}");
-                    }
-                };
-                page.RequestFailed += (_, r) =>
-                {
-                    if (r.Url.Contains("gateway/graphql"))
-                        Console.WriteLine($"[REQFAIL] {r.Method} {r.Url} :: {r.Failure}");
-                };
-                page.Response += (_, r) =>
-                {
-                    if (r.Url.Contains("gateway/graphql"))
-                        Console.WriteLine($"[NET] {r.Request.Method} {r.Url} -> {r.Status}");
-                };
-
-                // --disable-web-security lets JS read the cross-origin response but strips Origin and
-                // Referer. Restore them at the context level (matching the request the real site makes
-                // from this product page).
-                await page.SetExtraHTTPHeadersAsync(new Dictionary<string, string>
-                {
-                    ["origin"] = "https://www.kmart.com.au",
-                    ["referer"] = productUrl
-                });
-
-                var diag = await page.EvaluateAsync<JsonElement>(@"
-                    async (payload) => {
-                        try {
-                            const res = await fetch('https://api.kmart.com.au/gateway/graphql', {
-                                method: 'POST',
-                                headers: { 'accept': '*/*', 'content-type': 'application/json' },
-                                body: payload,
-                                credentials: 'include'
-                            });
-                            return { ok: true, status: res.status, body: await res.text() };
-                        } catch (e) {
-                            return { ok: false, error: String(e) };
-                        }
-                    }", payload);
-
-                Console.WriteLine($"[FETCH] {diag.GetRawText().Substring(0, Math.Min(200, diag.GetRawText().Length))}");
-
-                bool ok = diag.GetProperty("ok").GetBoolean();
-                if (ok && diag.GetProperty("status").GetInt32() == 200)
-                {
-                    _logger.LogInformation("Availability Data ({Status}): {Data}", 200, diag.GetProperty("body").GetString());
-                }
-                else if (ok)
-                {
-                    _logger.LogError("GraphQL Request Failed: {Status} {Text}", diag.GetProperty("status").GetInt32(), diag.GetProperty("body").GetString());
-                }
-                else
-                {
-                    _logger.LogError("GraphQL Request Failed: {Text}", diag.GetProperty("error").GetString());
-                }
+                _logger.LogError("GraphQL Request Failed: {Status} {Text}", 0,
+                    "No Kmart:AvailabilityCookie configured — supply a fresh Akamai cookie set.");
+                return;
             }
-            finally
+
+            var client = _httpClientFactory.CreateClient();
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.kmart.com.au/gateway/graphql")
             {
-                await page.CloseAsync();
+                Content = new StringContent(payload, Encoding.UTF8, "application/json")
+            };
+
+            request.Headers.TryAddWithoutValidation("accept", "*/*");
+            request.Headers.TryAddWithoutValidation("accept-language", "en-US,en;q=0.9");
+            request.Headers.TryAddWithoutValidation("origin", "https://www.kmart.com.au");
+            request.Headers.TryAddWithoutValidation("priority", "u=1, i");
+            request.Headers.TryAddWithoutValidation("referer", "https://www.kmart.com.au/");
+            request.Headers.TryAddWithoutValidation("sec-ch-ua", "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"150\", \"Google Chrome\";v=\"150\"");
+            request.Headers.TryAddWithoutValidation("sec-ch-ua-mobile", "?0");
+            request.Headers.TryAddWithoutValidation("sec-ch-ua-platform", "\"Windows\"");
+            request.Headers.TryAddWithoutValidation("sec-fetch-dest", "empty");
+            request.Headers.TryAddWithoutValidation("sec-fetch-mode", "cors");
+            request.Headers.TryAddWithoutValidation("sec-fetch-site", "same-site");
+            request.Headers.TryAddWithoutValidation("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36");
+            request.Headers.TryAddWithoutValidation("cookie", cookie);
+
+            var response = await client.SendAsync(request, cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+
+            if ((int)response.StatusCode == 200)
+            {
+                _logger.LogInformation("Availability Data ({Status}): {Data}", (int)response.StatusCode, body);
+                // Deserialize and process...
+            }
+            else
+            {
+                _logger.LogError("GraphQL Request Failed: {Status} {Text}", (int)response.StatusCode, body);
             }
         }
 
