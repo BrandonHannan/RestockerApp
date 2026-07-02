@@ -16,6 +16,7 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Configuration.Ini" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="8.0.1" />
     <PackageReference Include="Microsoft.Net.Http.Headers" Version="8.0.28" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.11" />
@@ -26,6 +27,12 @@
   <ItemGroup>
     <ProjectReference Include="..\Webhook.Data\Webhook.Data.csproj" />
     <ProjectReference Include="..\Webhook.Services\Webhook.Services.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="environment.conf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

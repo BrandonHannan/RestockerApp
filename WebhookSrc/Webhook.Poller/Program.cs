@@ -4,6 +4,11 @@ using Webhook.Services.ProductService;
 
 var builder = Host.CreateDefaultBuilder(args);
 
+builder.ConfigureAppConfiguration((hostingContext, config) =>
+{
+    config.AddIniFile("environment.conf", optional: true, reloadOnChange: true);
+});
+
 builder.ConfigureServices((hostContext, services) =>
 {
     services.AddHttpClient();
