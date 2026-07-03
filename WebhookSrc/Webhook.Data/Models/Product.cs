@@ -7,23 +7,25 @@ using System.Threading.Tasks;
 
 namespace Webhook.Data.Models
 {
+    // Represents a product in the system.
+    // Nullable properties are used as when products are scraped from distributors, some information may not be available.
     public class Product : BaseModel
     {
         public Guid ProductID { get; set; }
-        public string Name { get; set; }
-        public string Description { get; set; }
-        public double Price { get; set; }
-        public string ReferenceID { get; set; }
-        public string ProductUrl { get; set; }
-        public string ProductImgUrl { get; set; }
-        public Guid DistributorID { get; set; }
+        public string? Name { get; set; }
+        public string? Description { get; set; }
+        public double? Price { get; set; }
+        public string? ReferenceID { get; set; }
+        public string? ProductUrl { get; set; }
+        public string? ProductImgUrl { get; set; }
+        public Guid? DistributorID { get; set; }
         [ForeignKey("DistributorID")]
-        public virtual Distributor Distributor { get; set; }
+        public virtual Distributor? Distributor { get; set; }
         public bool IsPreOrder { get; set; } = false;
-        public string PreOrderDate { get; set; }
+        public string? PreOrderDate { get; set; }
         public bool IsAvailable { get; set; } = true;
-        public Guid FufilmentChannelID { get; set; }
+        public Guid? FufilmentChannelID { get; set; }
         [ForeignKey("FufilmentChannelID")]
-        public virtual FufilmentChannel FufilmentChannel { get; set; }
+        public virtual FufilmentChannel? FufilmentChannel { get; set; }
     }
 }

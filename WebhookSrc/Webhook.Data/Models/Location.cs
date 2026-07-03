@@ -10,7 +10,9 @@ namespace Webhook.Data.Models
     public class Location : BaseModel
     {
         public Guid LocationID { get; set; }
-        public string Name { get; set; }
+        public string? Name { get; set; }
+        public int? PostCode { get; set; }
+        public string? State { get; set; }
         public string ReferenceID { get; set; }
         public Guid DistributorID { get; set; }
         [ForeignKey("DistributorID")]

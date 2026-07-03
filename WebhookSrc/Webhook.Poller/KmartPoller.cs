@@ -22,7 +22,7 @@ namespace Webhook.Poller
         private readonly ILogger<KmartPoller> _logger;
         private readonly WebhookDbContext _dbContext;
         private readonly IHttpClientFactory _httpClientFactory;
-        private readonly PlaywrightBrowserService _browserService;
+        private readonly INotificationService _notificationService;
         private readonly IConfiguration _configuration;
         private readonly IProductService _productService;
         public string StoreName => "Kmart";
@@ -32,16 +32,16 @@ namespace Webhook.Poller
             WebhookDbContext dbContext, 
             IProductService productService, 
             IHttpClientFactory httpClientFactory, 
-            PlaywrightBrowserService browserService, 
+            INotificationService notificationService,
             IConfiguration configuration, 
             ILogger<KmartPoller> logger)
         {
             _dbContext = dbContext;
             _httpClientFactory = httpClientFactory;
+            _notificationService = notificationService;
             _productService = productService;
             _configuration = configuration;
             _logger = logger;
-            _browserService = browserService;
         }
 
         public async Task PollAsync(CancellationToken cancellationToken)
@@ -260,15 +260,22 @@ namespace Webhook.Poller
                                     DistributorID = distributor.DistributorID
                                 };
 
+                                bool notifyProduct = false;
+
                                 // Checks if the product already exists
+                                // Checking by ProductUrl as it is unique for each product and products found in the sitemap will not have a ReferenceID until the product page is polled
                                 var findProduct = await _dbContext.Products
-                                    .FirstOrDefaultAsync(p => p.ReferenceID == product.ReferenceID
-                                    && p.Name == product.Name
-                                    && !p.IsDeleted);
+                                    .FirstOrDefaultAsync(p => p.ProductUrl == product.ProductUrl && !p.IsDeleted);
 
                                 if (findProduct != null)
                                 {
                                     product.ProductID = findProduct.ProductID;
+                                }
+
+                                // Check if the product exists from the sitemap
+                                if (findProduct != null && findProduct.Name == null)
+                                {
+                                    notifyProduct = true;
                                 }
 
                                 // Adds or Updates the found product
